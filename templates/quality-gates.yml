@@ -1,0 +1,23 @@
+# 可选：完成项目命令配置后复制到 .github/workflows/sop.yml。
+# 运行环境（语言版本/依赖安装）必须按项目补齐。本模板仅执行自动门禁。
+name: Project SOP checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # 在这里增加项目依赖安装，例如 npm ci / Maven / pip。
+      - run: python .sop/runtime/sop.py verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sop-evidence
+          path: .sop/evidence/
+          include-hidden-files: true
