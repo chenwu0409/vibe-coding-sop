@@ -6,7 +6,7 @@
 python sop.py init examples/counter --profile S --name line-counter
 ```
 
-填写生成文档：目标是计算非空行；空输入为 0，空白行不计数，支持中文和 CRLF；不涉及联网、持久化或权限。把计划写成对应这三个行为的测试和实现。去掉模板占位内容。
+填写生成文档的各必需章节：目标是计算非空行；空输入为 0，空白行不计数，支持中文和 CRLF；不涉及联网、持久化或权限。把计划写成对应这三个行为的测试和实现；验证后在 validation 写实际映射、数量、日志和未验收项，交接时填写 handover。去掉模板占位内容。需要完整材料范本时看 [任务清单实例](../task-list/README.md)。
 
 在 examples/counter/.sop/project.json 设置：
 

@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -37,8 +38,12 @@ class SopTests(unittest.TestCase):
         self.save_config(config)
 
     def fill_docs(self):
+        sections = sop.read_json(sop.PACKAGE / "gates/document-sections.json")
         for path in (self.root / ".sop/docs").glob("*.md"):
-            path.write_text("# Filled fixture\nObservable behavior for this test.\n", encoding="utf-8")
+            content = "# Test fixture\n" + "".join(
+                "\n## " + heading + "\nTest-only fixture, not a real decision.\n"
+                for heading in sections[path.stem])
+            path.write_text(content, encoding="utf-8")
 
     def approve(self, name):
         # Test-only fake reviewer. Production code never writes approved records.
@@ -96,6 +101,37 @@ class SopTests(unittest.TestCase):
         self.assertEqual(self.call("verify", "--project", self.root), 1)
         report = sop.read_json(self.root / ".sop/evidence/latest.json")
         self.assertEqual(report["results"]["test"]["status"], "failed")
+
+    def test_required_sections_and_quoted_instructions(self):
+        self.init()
+        self.fill_docs()
+        path = self.root / ".sop/docs/constitution.md"
+        original = path.read_text(encoding="utf-8")
+        path.write_text(original.replace("## 不做什么", "## Different heading"), encoding="utf-8")
+        self.assertIn("缺少章节内容: constitution / 不做什么",
+                      sop.document_issues(self.root, "constitution"))
+        path.write_text(original.replace("Test-only fixture, not a real decision.",
+                                         "> Instructions only."), encoding="utf-8")
+        self.assertTrue(sop.document_issues(self.root, "constitution"))
+        path.write_text(original + "\nNEEDS CLARIFICATION: business rule\n", encoding="utf-8")
+        self.assertEqual(self.call("check", "--project", self.root), 1)
+
+    def test_new_modules_and_portable_guides(self):
+        self.assertEqual(self.call("init", self.root, "--profile", "S",
+                                   "--module", "research", "--module", "development"), 0)
+        for name in ("research", "development", "validation", "handover"):
+            self.assertTrue((self.root / ".sop/docs" / (name + ".md")).is_file())
+        self.assertEqual(len(list((self.root / ".sop/core/stages").glob("*.md"))), 7)
+        runtime = self.root / ".sop/runtime"
+        self.assertTrue((runtime / "examples/task-list/sop-docs/validation.md").is_file())
+        self.assertTrue((runtime / "docs/source-map.md").is_file())
+        # Follow the distributed documents without access to Obsidian or the source package.
+        for path in runtime.rglob("*.md"):
+            for target in re.findall(r"\]\(([^)]+)\)", path.read_text(encoding="utf-8")):
+                if "://" in target or target.startswith("#"):
+                    continue
+                target = target.split("#")[0]
+                self.assertTrue((path.parent / target).exists(), (path, target))
 
     def test_command_failure_and_log(self):
         self.init()
@@ -186,6 +222,18 @@ class SopTests(unittest.TestCase):
         record = sop.read_json(next((self.root / ".sop/handover").glob("*.json")))
         self.assertFalse(record["ready"])
         self.assertTrue(record["blockers"])
+        self.assertFalse(record["handover_complete"])
+        self.assertTrue(record["handover_issues"])
+
+    def test_handover_links_completed_narrative_without_claiming_delivery(self):
+        self.init()
+        self.fill_docs()
+        self.assertEqual(self.call("handover", "--project", self.root), 0)
+        record = sop.read_json(next((self.root / ".sop/handover").glob("*.json")))
+        self.assertFalse(record["ready"])
+        self.assertTrue(record["handover_complete"])
+        self.assertEqual(record["narrative"]["sha256"],
+                         sop.sha(self.root / record["narrative"]["path"]))
 
     def test_evidence_path_escape_rejected(self):
         self.init()
@@ -240,10 +288,14 @@ class SopTests(unittest.TestCase):
                              capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(run.returncode, 1, run.stderr)
         self.assertFalse(json.loads(run.stdout)["ready"])
+        demo_data = self.root / ".sop/runtime/examples/task-list/build/demo.db"
+        demo_data.parent.mkdir()
+        demo_data.write_bytes(b"private demo data must not propagate")
         second = self.root.parent / "second"
         run = subprocess.run([sys.executable, str(self.root / ".sop/runtime/sop.py"),
                               "init", str(second)], capture_output=True)
         self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertFalse((second / ".sop/runtime/examples/task-list/build").exists())
 
     def test_real_example_tests(self):
         shutil.copytree(sop.PACKAGE / "examples/counter", self.root,
@@ -255,6 +307,39 @@ class SopTests(unittest.TestCase):
         self.assertEqual(self.call("verify", "--project", self.root), 0)
         (self.root / "counter.py").write_text("def count_nonempty(text):\n    return 0\n")
         self.assertEqual(self.call("verify", "--project", self.root), 1)
+
+    def test_documented_task_list_end_to_end_and_mutation(self):
+        shutil.copytree(sop.PACKAGE / "examples/task-list", self.root,
+                        ignore=shutil.ignore_patterns("__pycache__", ".sop", "build"))
+        self.init("M")
+        for path in (self.root / "sop-docs").glob("*.md"):
+            shutil.copy2(path, self.root / ".sop/docs" / path.name)
+        config = self.config()
+        config["commands"] = {
+            "test": [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+            "build": [sys.executable, "-m", "compileall", "-q", "task_store.py", "cli.py"]}
+        self.save_config(config)
+        for name in sop.requirements(config)["documents"] + ["handover"]:
+            self.assertEqual(sop.document_issues(self.root, name), [], name)
+        self.assertEqual(self.call("check", "--project", self.root, "--stage", "L0"), 0)
+        self.assertEqual(self.call("verify", "--project", self.root), 0)
+        report = sop.read_json(self.root / ".sop/evidence/latest.json")
+        test_log = (self.root / report["results"]["test"]["log"]).read_text(encoding="utf-8")
+        self.assertIn("Ran 9 tests", test_log)
+        blockers = sop.inspection(self.root, config, 4)
+        self.assertEqual(len(blockers), 3, blockers)
+        self.assertTrue(all(item.startswith("人工复核待完成:") for item in blockers))
+        self.assertTrue(all(record["status"] == "pending" for record in
+                            sop.read_json(self.root / ".sop/state.json")["reviews"].values()))
+        path = self.root / "task_store.py"
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("SET status='done'", content)
+        path.write_text(content.replace("SET status='done'", "SET status='pending'"),
+                        encoding="utf-8")
+        self.assertEqual(self.call("verify", "--project", self.root), 1)
+        failed = sop.read_json(self.root / ".sop/evidence/latest.json")
+        self.assertEqual(failed["results"]["test"]["status"], "failed")
+        self.assertEqual(failed["results"]["build"]["status"], "passed")
 
 
 if __name__ == "__main__":

@@ -4,3 +4,5 @@ __pycache__/
 .env
 .sop/evidence/
 .sop/handover/
+examples/*/.sop/
+examples/*/build/

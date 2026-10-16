@@ -6,7 +6,7 @@
 
 - `schema_version`：固定 1；`sop_version`：生成时锁定的工具版本。
 - `profile`：S/M/L；`risk`：normal/high。项目类型与技术栈写入 constitution，命令从项目已有工具读取。
-- `modules`：可选 glossary/wireframe/regression 文档。
+- `modules`：可选 glossary/wireframe/regression/research/development 文档。
 - `commands`：门禁 ID 到命令参数数组的映射；不会经过隐式 shell。例如 `["python","-m","unittest","discover","-s","tests"]`。
 - `timeout_seconds`：每条命令 1–3600 秒，默认 300。
 
@@ -16,9 +16,13 @@ S 要求 test；M 加 build；L 加 lint；high 对任意档加 security。具�
 
 ## 阶段与材料
 
-`.sop/state.json` 的 `target_stage` 默认为 L0。完成当前阶段后手动改为下一阶段，或用 `check --stage L3` 临时检查。检查累积前面阶段的要求。包含 TODO/TBD/双花括号占位符或仅有标题的文档不能通过；检查不判断自然语言内容是否正确。
+`.sop/state.json` 的 `target_stage` 默认为 L0。完成当前阶段后手动改为下一阶段，或用 `check --stage L3` 临时检查。检查累积前面阶段的要求。包含 TODO/TBD/NEEDS CLARIFICATION/双花括号占位符或缺少必需二级章节内容的文档不能通过。必需标题定义在 gates/document-sections.json，不随意改名；引用块中的说明、标题、空复选框不算项目内容。
 
-原始模板为长篇资料，本包将开发文档合入 design/plan；测试用例以实际测试代码和验收编号为准，报告从执行生成，避免重复填写。
+检查不判断自然语言内容是否正确；随意填一句话仍可能通过结构检查。因此通过不等于内容审查通过，尤其不能代替独立业务预期和可失败的测试断言。具体内容审查见 core/stages。
+
+S 的计划兼任开发落点记录；M/L 增加 development 文档。所有档在 L4 要求 validation，记录 AC→TC→测试位置/实际证据、失败及未验证项。脚本只保存命令退出码和日志，不自动解析用例数量、生成覆盖率或跨语言 TC 映射。
+
+初始化复制完整阶段手册到 .sop/core，并将 README、实例、模板及规则放入 .sop/runtime。运行时可以脱离原工具库使用；不需要回到 Obsidian 读取原文。
 
 ## 人工复核
 
@@ -62,6 +66,8 @@ scope 绑定对应阶段及之前的文档、配置；acceptance/release 还绑�
 超时限制直接启动的进程；使用可能派生长期后台进程的命令时，项目脚本负责清理进程树，或交给 CI 作业级超时管理。verify 默认不重试、不修改代码。
 
 ## 退出码
+
+handover 额外读取 .sop/docs/handover.md，将其路径和 SHA256 写入 narrative。ready 表示 L4 材料/登记证据状态；handover_complete 表示交接正文结构已补齐，handover_issues 列出缺口，两者独立。接收方应检查正文哈希；快照引用正文而非嵌入全文，归档时必须一起保存。旧 design_decisions/next_actions 字段保留兼容，实际理由与下一步写正文。
 
 - 0：命令成功；check 表示所选阶段材料/证据符合协议，verify 表示本次自动检查通过。
 - 1：检查未就绪或自动验证失败。

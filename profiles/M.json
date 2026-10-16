@@ -1,1 +1,1 @@
-{"documents":["constitution","requirements","design","plan"],"commands":["test","build"],"reviews":["requirements","design","acceptance"]}
+{"documents":["constitution","requirements","design","plan","development","validation"],"commands":["test","build"],"reviews":["requirements","design","acceptance"]}

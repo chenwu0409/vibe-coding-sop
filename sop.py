@@ -16,13 +16,15 @@ import uuid
 PACKAGE = Path(__file__).resolve().parent
 DOC_STAGE = {"constitution": 0, "requirements": 1, "glossary": 1,
              "wireframe": 1, "design": 2, "risk": 2, "plan": 3,
-             "tasks": 3, "regression": 3}
+             "tasks": 3, "regression": 3, "development": 3,
+             "research": 1, "validation": 4}
+MODULES = ("glossary", "wireframe", "regression", "research", "development")
 REVIEW_STAGE = {"constitution": 0, "requirements": 1, "design": 2,
                 "acceptance": 4, "release": 4}
 EXCLUDED = {".git", ".sop", "__pycache__", ".venv", "venv", "node_modules",
             "target", "dist", "build", ".pytest_cache", ".mypy_cache",
             ".gradle", "coverage", ".next"}
-PLACEHOLDER = re.compile(r"\bTODO\b|\bTBD\b|\{\{[^}]+\}\}", re.I)
+PLACEHOLDER = re.compile(r"\bTODO\b|\bTBD\b|NEEDS CLARIFICATION|\{\{[^}]+\}\}", re.I)
 
 
 class SopError(Exception):
@@ -75,7 +77,7 @@ def load_project(root):
         raise SopError("risk 必须为 normal/high")
     modules = config.get("modules")
     if not isinstance(modules, list) or any(
-            item not in ("glossary", "wireframe", "regression") for item in modules):
+            item not in MODULES for item in modules):
         raise SopError("modules 含未知项")
     if not isinstance(config.get("commands"), dict):
         raise SopError("commands 必须是对象")
@@ -138,11 +140,13 @@ def init_project(args):
         stage = Path(temporary) / ".sop"
         runtime = stage / "runtime"
         runtime.mkdir(parents=True)
-        for name in ("sop.py", "VERSION", "LICENSE"):
+        for name in ("sop.py", "VERSION", "LICENSE", "README.md", "CHANGELOG.md"):
             shutil.copy2(PACKAGE / name, runtime / name)
         for name in ("profiles", "gates", "templates", "docs", "skills"):
             shutil.copytree(PACKAGE / name, runtime / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(PACKAGE / "examples", runtime / "examples",
+                        ignore=shutil.ignore_patterns("__pycache__", ".sop", "build"))
         shutil.copytree(PACKAGE / "core", stage / "core")
         # Keep init usable from the pinned runtime as well.
         shutil.copytree(PACKAGE / "core", runtime / "core")
@@ -153,7 +157,7 @@ def init_project(args):
                               "evidence": "", "sha256": ""}
                         for key in spec["reviews"]}})
         (stage / "docs").mkdir()
-        for name in spec["documents"]:
+        for name in spec["documents"] + ["handover"]:
             shutil.copy2(PACKAGE / "templates" / (name + ".md"),
                          stage / "docs" / (name + ".md"))
         shutil.copytree(stage, root / ".sop")
@@ -203,21 +207,36 @@ def command_valid(argv):
         isinstance(arg, str) and arg and "\0" not in arg for arg in argv)
 
 
+def document_issues(root, name):
+    """Check minimum structure, not the truth or quality of the prose."""
+    path = root / ".sop/docs" / (name + ".md")
+    if not path.is_file():
+        return ["缺少文档: " + name]
+    content = path.read_text(encoding="utf-8")
+    issues = []
+    if PLACEHOLDER.search(content):
+        issues.append("文档尚未填写或有阻塞澄清: " + name)
+    required = read_json(PACKAGE / "gates/document-sections.json")[name]
+    chunks = re.split(r"^##[ \t]+(.+?)[ \t]*$", content, flags=re.M)
+    sections = dict(zip(chunks[1::2], chunks[2::2]))
+    for heading in required:
+        body = sections.get(heading, "")
+        # Quoted instructions and empty checklist items are not project decisions.
+        lines = [line.strip() for line in body.splitlines()
+                 if line.strip() and not line.lstrip().startswith((">", "#", "<!--"))]
+        lines = [line for line in lines if not re.fullmatch(r"[-| :]+|- \[[ x]\]", line)]
+        if not lines:
+            issues.append("缺少章节内容: " + name + " / " + heading)
+    return issues
+
+
 def inspection(root, config, stage):
     spec = requirements(config)
     blockers = []
     for name in spec["documents"]:
         if DOC_STAGE[name] > stage:
             continue
-        path = root / ".sop/docs" / (name + ".md")
-        if not path.is_file():
-            blockers.append("缺少文档: " + name)
-        else:
-            content = path.read_text(encoding="utf-8")
-            substantive = [line for line in content.splitlines()
-                           if line.strip() and not line.startswith("#")]
-            if not substantive or PLACEHOLDER.search(content):
-                blockers.append("文档尚未填写: " + name)
+        blockers.extend(document_issues(root, name))
     state = read_json(root / ".sop/state.json")
     if not isinstance(state, dict) or not isinstance(state.get("reviews"), dict):
         raise SopError("state.json 的 reviews 必须为对象")
@@ -325,6 +344,12 @@ def handover_project(args):
               "source_sha256": fingerprint(root), "ready": not blockers,
               "blockers": blockers, "design_decisions": [], "next_actions": [],
               "note": "补充设计理由与下一步；ready 仅表示材料与登记证据合规"}
+    narrative = root / ".sop/docs/handover.md"
+    narrative_issues = document_issues(root, "handover")
+    record["handover_complete"] = not narrative_issues
+    record["handover_issues"] = narrative_issues
+    record["narrative"] = {"path": ".sop/docs/handover.md",
+                           "sha256": sha(narrative) if narrative.is_file() else None}
     path = root / ".sop/handover" / (uuid.uuid4().hex + ".json")
     write_json(path, record)
     print(str(path))
@@ -339,7 +364,7 @@ def main(argv=None):
     init.add_argument("--name")
     init.add_argument("--profile", choices=["S", "M", "L"], default="M")
     init.add_argument("--risk", choices=["normal", "high"], default="normal")
-    init.add_argument("--module", choices=["glossary", "wireframe", "regression"],
+    init.add_argument("--module", choices=MODULES,
                       action="append", default=[])
     init.add_argument("--agent-file", default="AGENTS.md")
     init.set_defaults(func=init_project)
