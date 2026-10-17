@@ -29,3 +29,6 @@ TODO: 实现顺序、首个反馈点、完成条件。M/L 引用 development；�
 
 ## 风险与推进记录
 TODO: 外部/内部/技术/业务中适用的风险、前置条件、责任人、替代方法；里程碑以可演示成果定义。记录进行中/阻塞/已验证、耗时与返工；不以文件数代表完成。
+
+## 状态、基线与恢复
+TODO: 当前 `state.json.target_stage`；`.sop/tasks.json` 中任务状态；任务/文档与源码是否同步；最近 `sync` 指纹；Git 基线提交、任务提交差异、校验方式、恢复步骤和数据限制。每完成一个任务必须同步 tasks/plan/development/validation，再运行 `sop.py sync` 和当前阶段 check，最后提交本地 Git。

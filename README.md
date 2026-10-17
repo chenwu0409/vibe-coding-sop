@@ -8,6 +8,7 @@
 git clone https://github.com/chenwu0409/vibe-coding-sop.git
 python vibe-coding-sop/sop.py init ../my-app --name my-app --profile M --risk normal
 cd ../my-app
+python .sop/runtime/sop.py baseline --message "chore: establish local baseline"
 python .sop/runtime/sop.py check
 ```
 
@@ -19,11 +20,19 @@ python .sop/runtime/sop.py check
 
 ```sh
 python .sop/runtime/sop.py check --stage L0
+# L3/L4 任务语义与平台记录检查
+python .sop/runtime/sop.py audit --stage L3
 # 编辑 .sop/project.json 的 commands 后，显式执行：
 python .sop/runtime/sop.py verify
 python .sop/runtime/sop.py check --stage L4
 python .sop/runtime/sop.py handover
 ```
+
+每次新任务或继续任务都先运行 `check`，把输出作为起始基线。需求、设计、计划、平台边界、配置、共享契约或源码变化后重新运行 check；若出现 scope 变化，受影响复核必须重新确认。交付时严格按 `verify` → 真实目标平台/界面检查 → `check --stage L4` 收口。
+
+每个任务和环节完成后必须同步：更新 `.sop/tasks.json` 的任务状态、AC/代码/测试/证据字段，同时更新受影响的 plan/development/validation/risk 文档，再运行 `python .sop/runtime/sop.py sync`。`check` 会校验同步指纹；源码、配置、任务清单或阶段文档发生变化而未重新同步时，检查失败。进入 L3/L4 时必须有任务清单；任务标记 `done` 必须有测试、证据且 `verification` 为 `passed`。同步不是人工审批，也不能替代真实平台验证。
+
+进入 L3/L4 前另运行 `audit`：它检查 AC 是否存在、任务声明的代码/测试路径是否存在，以及启用目标平台时是否有完整的平台编译/冒烟记录。`audit` 是语义一致性检查，不代替测试或人工验收。
 
 命令使用参数数组，例如 `"test": ["python","-m","unittest","discover","-s","tests"]`。Windows 的 .cmd/.bat 可显式配置 `["cmd","/c","npm","test"]`。先审阅配置再执行，命令拥有当前用户权限。
 
@@ -33,9 +42,9 @@ check 只读；verify 执行门禁并保存日志，绑定源码和命令配置�
 |---|---|---|---|---|
 | S | 小工具、局部修改 | 宪法、需求、计划、验证摘要 | test | 验收 |
 | M（默认） | 普通业务应用 | S + 技术设计、开发落点 | test、build | 需求、设计、验收 |
-| L | 跨模块、多人/Agent | M + 术语、任务、回归计划 | test、build、lint | 宪法、需求、设计、验收 |
+| L | 跨模块、长周期单 Agent 项目 | M + 术语、任务、回归计划 | test、build、lint | 宪法、需求、设计、验收 |
 
-`--risk high` 对任意档追加 risk 文档、security 命令和发布/回滚复核；`--module` 可按需增加 glossary、wireframe、regression、research、development。所有档生成交接模板，但不要求启动时填写。覆盖率与函数长度由项目自定，不用统一数字代替质量判断。
+`--risk high` 对任意档追加 risk 文档、security 命令和发布/回滚复核；`--module` 可按需增加 glossary、wireframe、regression、research、development。所有档生成交接模板，但不要求启动时填写。每个项目必须有本地 Git，不要求远端服务器，但必须有命名基线提交。覆盖率与函数长度由项目自定，不用统一数字代替质量判断。需要真实平台验证时，在 `project.json` 设置 `platform.required=true`，并填写 `.sop/platform-verification.json`。
 
 ## 具体如何做
 
@@ -57,7 +66,7 @@ check 只读；verify 执行门禁并保存日志，绑定源码和命令配置�
 
 生成的 AGENTS.md 很短，按任务指向工作流和对应阶段材料。给编码助手的启动提示：
 
-> 阅读本项目 AGENTS.md 与 .sop/project.json，运行 check。先探索现有代码，按 .sop/core/workflow.md 路由加载当前阶段手册。根据我给出的目标起草本阶段文档，标明事实、假设及需要我决定的事项。明确验收条件后实现一个可验证的纵向切片，检查旧行为回归，用实际测试结果交付，在已有授权范围内连续推进。不要把模板示例当成我的决定，也不要代签审批。
+> 阅读本项目 AGENTS.md 与 .sop/project.json，确认本地 Git 基线后运行 check。先探索现有代码，按 .sop/core/workflow.md 路由加载当前阶段手册。根据我给出的目标起草本阶段文档，标明事实、假设及需要我决定的事项。明确验收条件后实现一个可验证的纵向切片，更新 .sop/tasks.json 和受影响文档，运行 sync、当前阶段 check 并提交本地 Git；检查旧行为回归，用实际测试结果交付，在已有授权范围内连续推进。不要把模板示例当成我的决定，也不要代签审批。
 
 [可选 Skill](skills/vibe-coding-sop/SKILL.md) 提供相同执行入口。自动读取 AGENTS.md 和安装 Skill 的方式取决于助手配置，不支持时显式提供文件。本包不依赖其他 Skill 才能工作。
 
@@ -72,11 +81,15 @@ your-project/
     ├── core/                # 总流程 + 7 个阶段操作手册
     ├── docs/                 # 已裁剪模板
     ├── runtime/              # 可独立运行的版本快照
+    ├── tasks.json            # 机器可读任务/AC/测试/验证状态
+    ├── platform-verification.json # 真实平台编译/冒烟记录（按需启用）
+    ├── sync.json             # 最近一次状态同步指纹（本地忽略）
+    ├── git-baseline.json     # 本地 Git 恢复基线（本地忽略）
     ├── evidence/             # verify 后生成
     └── handover/             # handover 后生成
 ```
 
-[配置与证据协议](docs/protocol.md) 说明人工复核、源码指纹和退出码；[维护与迁移](docs/maintenance.md) 说明已有项目接入及显式升级。check 通过仅表示材料和登记证据符合协议，业务质量仍取决于测试断言和实际验收。
+[配置与证据协议](docs/protocol.md) 说明人工复核、源码指纹和退出码；[平台验证边界](docs/platforms.md) 说明微信小程序、Android、iOS 的可执行范围；[维护与迁移](docs/maintenance.md) 说明已有项目接入及显式升级。check 通过仅表示材料和登记证据符合协议，业务质量仍取决于测试断言和实际验收。
 
 ## 示例与测试
 
@@ -92,6 +105,6 @@ GitHub Actions 配置了 Windows/Linux、Python 3.10/3.14 测试矩阵。业务 
 
 ## 版本与来源
 
-当前为 [0.2.0 试用版](CHANGELOG.md)，优先在两个真实项目测量交付耗时、返工、缺陷和人工介入，再扩展自动升级。没有自动修改源码、内置安全扫描器或审批身份认证；具体边界见协议。0.1 项目需要显式迁移，不能只改版本号。
+当前为 [0.2.5 试用版](CHANGELOG.md)，优先在两个真实项目测量交付耗时、返工、缺陷和人工介入，再扩展自动升级。没有自动修改源码、内置安全扫描器或审批身份认证；具体边界见协议。旧项目需要显式迁移，不能只改版本号。
 
 从“一堂双三角”的 L0–L4 流程、质量门禁、测试验证和交接规范提炼。[来源与取舍表](docs/source-map.md) 逐项说明采用了什么、放在哪里、哪些规则未机械照搬。Obsidian 保存研究历史，本仓库维护可分发版本。未复制私人路径、服务器配置和未经核验的效果数字。沿用仓库既有 Apache-2.0 许可证。

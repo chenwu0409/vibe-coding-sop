@@ -25,6 +25,8 @@ EXCLUDED = {".git", ".sop", "__pycache__", ".venv", "venv", "node_modules",
             "target", "dist", "build", ".pytest_cache", ".mypy_cache",
             ".gradle", "coverage", ".next"}
 PLACEHOLDER = re.compile(r"\bTODO\b|\bTBD\b|NEEDS CLARIFICATION|\{\{[^}]+\}\}", re.I)
+TASK_STATUSES = {"planned", "in_progress", "blocked", "done"}
+VERIFICATION_STATUSES = {"pending", "partial", "passed", "blocked"}
 
 
 class SopError(Exception):
@@ -47,6 +49,188 @@ def write_json(path, value):
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     temp.write_text(content, encoding="utf-8")
     temp.replace(path)
+
+
+def git_run(root, arguments, check=False):
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as error:
+        raise SopError("本地 Git 不可用: " + str(error)) from error
+    if check and result.returncode != 0:
+        message = (result.stderr or result.stdout).strip()
+        raise SopError("Git 命令失败: " + message)
+    return result
+
+
+def local_git_issues(root):
+    result = git_run(root, ["rev-parse", "--show-toplevel"])
+    if result.returncode != 0:
+        return ["项目必须由本地 Git 管理；请先运行 baseline 初始化基线"]
+    try:
+        git_root = Path(result.stdout.strip()).resolve()
+    except OSError:
+        return ["无法解析本地 Git 根目录"]
+    if git_root != root.resolve():
+        return ["项目必须有自己的本地 Git 根目录，不能只依赖父目录仓库"]
+    metadata = root / ".sop/git-baseline.json"
+    if not metadata.is_file():
+        return ["缺少本地 Git 基线：运行 `python .sop/runtime/sop.py baseline`"]
+    try:
+        record = read_json(metadata)
+    except (OSError, ValueError, TypeError):
+        return ["本地 Git 基线文件损坏：重新运行 baseline"]
+    commit = record.get("commit") if isinstance(record, dict) else ""
+    if not isinstance(commit, str) or not commit:
+        return ["本地 Git 基线缺少 commit：重新运行 baseline"]
+    exists = git_run(root, ["cat-file", "-e", commit + "^{commit}"])
+    if exists.returncode != 0:
+        return ["本地 Git 基线提交不存在：重新建立 baseline"]
+    return []
+
+
+def sync_fingerprint(root, config, spec, stage):
+    payload = {
+        "stage": stage,
+        "source": fingerprint(root),
+        "config": config,
+        "tasks": sha(root / ".sop/tasks.json") if (root / ".sop/tasks.json").is_file() else "MISSING",
+        # Hash every configured project document so an Agent cannot leave a later-stage
+        # document stale while keeping target_stage at an earlier value.
+        "documents": document_digest(root, spec["documents"]),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def task_issues(root, stage):
+    path = root / ".sop/tasks.json"
+    if stage < 3:
+        return []
+    if not path.is_file():
+        return ["缺少 .sop/tasks.json：必须登记任务、AC、测试和验证状态"]
+    try:
+        board = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return [".sop/tasks.json 格式错误"]
+    tasks = board.get("tasks") if isinstance(board, dict) else None
+    if not isinstance(tasks, list) or not tasks:
+        return [".sop/tasks.json 必须至少包含一项任务"]
+    issues = []
+    seen = set()
+    for index, task in enumerate(tasks, 1):
+        prefix = f"任务 #{index}"
+        if not isinstance(task, dict):
+            issues.append(prefix + "必须是对象")
+            continue
+        task_id = task.get("id")
+        if not isinstance(task_id, str) or not task_id.strip() or task_id in seen:
+            issues.append(prefix + "缺少唯一 id")
+        seen.add(task_id)
+        status = task.get("status")
+        verification = task.get("verification")
+        if status not in TASK_STATUSES:
+            issues.append(prefix + " status 必须为 planned/in_progress/blocked/done")
+        if verification not in VERIFICATION_STATUSES:
+            issues.append(prefix + " verification 必须为 pending/partial/passed/blocked")
+        for field in ("ac_ids", "implementation", "tests", "evidence"):
+            if not isinstance(task.get(field), list) or not task[field]:
+                issues.append(prefix + " 缺少非空 " + field)
+        if status == "done" and verification != "passed":
+            issues.append(prefix + " 已标记 done 但 verification 不是 passed")
+    return issues
+
+
+def requirement_ac_ids(root):
+    path = root / ".sop/docs/requirements.md"
+    if not path.is_file():
+        return set()
+    return set(re.findall(r"\bAC-\d{3}\b", path.read_text(encoding="utf-8")))
+
+
+def declared_path_exists(root, value):
+    if not isinstance(value, str) or not value.strip():
+        return False
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        return False
+    if any(character in value for character in "*?[]"):
+        return any(root.glob(value))
+    return (root / path).is_file()
+
+
+def audit_issues(root, config, stage):
+    """Check task declarations against project facts without modifying files."""
+    if stage < 3:
+        return []
+    path = root / ".sop/tasks.json"
+    if not path.is_file():
+        return ["audit: 缺少 .sop/tasks.json"]
+    try:
+        board = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return ["audit: .sop/tasks.json 格式错误"]
+    tasks = board.get("tasks") if isinstance(board, dict) else None
+    if not isinstance(tasks, list):
+        return ["audit: tasks 必须为数组"]
+    ac_ids = requirement_ac_ids(root)
+    issues = []
+    for index, task in enumerate(tasks, 1):
+        if not isinstance(task, dict):
+            continue
+        prefix = f"audit: 任务 #{index}"
+        for ac_id in task.get("ac_ids", []):
+            if ac_id not in ac_ids:
+                issues.append(prefix + " 引用了不存在的 AC: " + str(ac_id))
+        for field in ("implementation", "tests"):
+            for declared in task.get(field, []):
+                if not declared_path_exists(root, declared):
+                    issues.append(prefix + f" {field} 路径不存在: {declared}")
+        if task.get("status") == "done" and task.get("verification") != "passed":
+            issues.append(prefix + " done 必须对应 verification=passed")
+    platform = config.get("platform", {})
+    if isinstance(platform, dict) and platform.get("required"):
+        record_path = root / ".sop/platform-verification.json"
+        if not record_path.is_file():
+            issues.append("audit: platform.required=true 但缺少 .sop/platform-verification.json")
+        else:
+            try:
+                record = read_json(record_path)
+            except (OSError, ValueError, TypeError):
+                issues.append("audit: 平台验证记录格式错误")
+            else:
+                for field in ("platform", "tool", "tool_version", "source_root"):
+                    if not isinstance(record.get(field), str) or not record[field].strip():
+                        issues.append("audit: 平台验证记录缺少 " + field)
+                if record.get("compile") != "passed":
+                    issues.append("audit: 真实平台编译尚未 passed")
+                if record.get("smoke") != "passed":
+                    issues.append("audit: 真实平台冒烟尚未 passed")
+    return issues
+
+
+def sync_issues(root, config, stage):
+    spec = requirements(config)
+    path = root / ".sop/sync.json"
+    if not path.is_file():
+        return ["缺少同步记录：先完成当前环节的文档/任务/验证同步，再运行 `sop.py sync`"]
+    try:
+        record = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return [".sop/sync.json 格式错误：重新运行 sync"]
+    expected = sync_fingerprint(root, config, spec, stage)
+    if record.get("stage") != stage or record.get("fingerprint") != expected:
+        return ["同步记录已过期：需求、计划、源码或配置发生变化；完成同步后运行 `sop.py sync`"]
+    state = read_json(root / ".sop/state.json")
+    last_sync = state.get("last_sync") if isinstance(state, dict) else None
+    if not isinstance(last_sync, dict) or last_sync.get("fingerprint") != record.get("fingerprint"):
+        return ["state.json 的 last_sync 与 sync.json 不一致：重新运行 `sop.py sync`"]
+    return []
 
 
 def sha(path):
@@ -81,6 +265,9 @@ def load_project(root):
         raise SopError("modules 含未知项")
     if not isinstance(config.get("commands"), dict):
         raise SopError("commands 必须是对象")
+    platform = config.get("platform", {"required": False})
+    if not isinstance(platform, dict) or type(platform.get("required", False)) is not bool:
+        raise SopError("platform.required 必须为布尔值")
     timeout = config.get("timeout_seconds")
     if type(timeout) is not int or not 1 <= timeout <= 3600:
         raise SopError("timeout_seconds 必须为 1–3600 整数")
@@ -131,7 +318,8 @@ def init_project(args):
               "sop_version": (PACKAGE / "VERSION").read_text().strip(),
               "name": args.name or root.name, "profile": args.profile,
               "risk": args.risk, "modules": args.module,
-              "timeout_seconds": 300, "commands": {}}
+              "timeout_seconds": 300, "commands": {},
+              "platform": {"required": False, "name": ""}}
     spec = requirements(config)
     config["commands"] = {key: [] for key in spec["commands"]}
     root.mkdir(parents=True, exist_ok=True)
@@ -153,19 +341,35 @@ def init_project(args):
         write_json(stage / "project.json", config)
         write_json(stage / "state.json", {
             "schema_version": 1, "target_stage": "L0",
+            "last_sync": None,
+            "git": {"required": True, "baseline": ""},
             "reviews": {key: {"status": "pending", "reviewer": "", "decision": "",
                               "evidence": "", "sha256": ""}
                         for key in spec["reviews"]}})
+        shutil.copy2(PACKAGE / "templates/tasks.json", stage / "tasks.json")
+        shutil.copy2(PACKAGE / "templates/platform-verification.json",
+                     stage / "platform-verification.json")
         (stage / "docs").mkdir()
         for name in spec["documents"] + ["handover"]:
             shutil.copy2(PACKAGE / "templates" / (name + ".md"),
                          stage / "docs" / (name + ".md"))
         shutil.copytree(stage, root / ".sop")
+        (root / ".sop/.gitignore").write_text(
+            "git-baseline.json\nsync.json\nevidence/\nhandover/\n",
+            encoding="utf-8",
+        )
         # Exclusive create protects existing agent files even if a concurrent writer appears.
         with agent.open("x", encoding="utf-8") as stream:
             stream.write((PACKAGE / "templates/AGENTS.md").read_text(encoding="utf-8"))
+    git = git_run(root, ["init"])
+    if git.returncode != 0:
+        raise SopError("无法初始化项目本地 Git: " + (git.stderr or git.stdout).strip())
+    if git_run(root, ["config", "--get", "user.name"]).returncode != 0:
+        git_run(root, ["config", "user.name", "Vibe Coding SOP"], check=True)
+    if git_run(root, ["config", "--get", "user.email"]).returncode != 0:
+        git_run(root, ["config", "user.email", "local-sop@localhost"], check=True)
     print("已初始化 " + str(root))
-    print("下一步：填写 .sop/docs/constitution.md，运行 check；待填写模板不会通过。")
+    print("下一步：先填写文档，运行 baseline 建立本地 Git 基线，再运行 check；待填写模板不会通过。")
     return 0
 
 
@@ -233,6 +437,7 @@ def document_issues(root, name):
 def inspection(root, config, stage):
     spec = requirements(config)
     blockers = []
+    blockers.extend(local_git_issues(root))
     for name in spec["documents"]:
         if DOC_STAGE[name] > stage:
             continue
@@ -240,6 +445,8 @@ def inspection(root, config, stage):
     state = read_json(root / ".sop/state.json")
     if not isinstance(state, dict) or not isinstance(state.get("reviews"), dict):
         raise SopError("state.json 的 reviews 必须为对象")
+    blockers.extend(task_issues(root, stage))
+    blockers.extend(sync_issues(root, config, stage))
     for name in spec["reviews"]:
         if REVIEW_STAGE[name] <= stage:
             issue = check_review(root, config, spec, name, state["reviews"].get(name))
@@ -275,6 +482,72 @@ def stage_number(value):
     return int(value[1])
 
 
+def baseline_project(args):
+    root = Path(args.project).resolve()
+    config = load_project(root)
+    if local_git_issues(root) and not (root / ".sop/git-baseline.json").is_file():
+        # A repository may exist but have no baseline yet; only the first issue is relevant here.
+        git_root = git_run(root, ["rev-parse", "--show-toplevel"])
+        if git_root.returncode != 0:
+            raise SopError("项目必须有自己的本地 Git 仓库；请先确认 git 可用")
+    git_root = git_run(root, ["rev-parse", "--show-toplevel"])
+    if git_root.returncode != 0 or Path(git_root.stdout.strip()).resolve() != root:
+        raise SopError("项目必须有自己的本地 Git 根目录")
+    status = git_run(root, ["status", "--porcelain"])
+    if status.returncode != 0:
+        raise SopError("无法读取 Git 工作区状态")
+    head = git_run(root, ["rev-parse", "--verify", "HEAD"])
+    if status.stdout.strip() or head.returncode != 0:
+        git_run(root, ["add", "-A"], check=True)
+        message = args.message or "chore: establish local SOP baseline"
+        git_run(root, ["commit", "-m", message], check=True)
+        head = git_run(root, ["rev-parse", "--verify", "HEAD"], check=True)
+    commit = head.stdout.strip()
+    metadata = {
+        "schema_version": 1,
+        "commit": commit,
+        "message": args.message or "chore: establish local SOP baseline",
+        "created_at": now(),
+        "source_sha256": fingerprint(root),
+        "recovery": "git checkout " + commit,
+    }
+    write_json(root / ".sop/git-baseline.json", metadata)
+    print("本地 Git 基线已建立: " + commit)
+    return 0
+
+
+def sync_project(args):
+    root = Path(args.project).resolve()
+    config = load_project(root)
+    git_issues = local_git_issues(root)
+    if git_issues:
+        raise SopError("同步前必须先建立本地 Git 基线: " + "；".join(git_issues))
+    state = read_json(root / ".sop/state.json")
+    target = args.stage or state.get("target_stage")
+    stage = stage_number(target)
+    spec = requirements(config)
+    issues = []
+    for name in spec["documents"]:
+        if DOC_STAGE[name] <= stage:
+            issues.extend(document_issues(root, name))
+    issues.extend(task_issues(root, stage))
+    if issues:
+        raise SopError("同步前材料未完成:\n- " + "\n- ".join(issues))
+    digest = sync_fingerprint(root, config, spec, stage)
+    write_json(root / ".sop/sync.json", {
+        "schema_version": 1,
+        "stage": stage,
+        "fingerprint": digest,
+        "synced_at": now(),
+        "source_sha256": fingerprint(root),
+        "task_board": ".sop/tasks.json",
+    })
+    state["last_sync"] = {"stage": target, "fingerprint": digest, "synced_at": now()}
+    write_json(root / ".sop/state.json", state)
+    print("状态同步完成: " + target + " / " + digest)
+    return 0
+
+
 def check_project(args):
     root = Path(args.project).resolve()
     config = load_project(root)
@@ -289,6 +562,23 @@ def check_project(args):
         for item in blockers:
             print("- " + item)
     return 1 if blockers else 0
+
+
+def audit_project(args):
+    root = Path(args.project).resolve()
+    config = load_project(root)
+    target = args.stage or read_json(root / ".sop/state.json").get("target_stage")
+    stage = stage_number(target)
+    issues = task_issues(root, stage) + audit_issues(root, config, stage)
+    result = {"stage": target, "ready": not issues, "issues": issues,
+              "meaning": "语义一致性检查，不代替测试或人工验收"}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(target + (" audit 通过" if not issues else " audit 发现问题"))
+        for item in issues:
+            print("- " + item)
+    return 1 if issues else 0
 
 
 def verify_project(args):
@@ -368,13 +658,22 @@ def main(argv=None):
                       action="append", default=[])
     init.add_argument("--agent-file", default="AGENTS.md")
     init.set_defaults(func=init_project)
-    for name, function in (("check", check_project), ("verify", verify_project),
-                           ("handover", handover_project)):
+    for name, function in (("check", check_project), ("audit", audit_project),
+                           ("verify", verify_project),
+                           ("handover", handover_project), ("baseline", baseline_project),
+                           ("sync", sync_project)):
         command = sub.add_parser(name)
         command.add_argument("--project", default=".")
         if name == "check":
             command.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
             command.add_argument("--json", action="store_true")
+        if name == "audit":
+            command.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
+            command.add_argument("--json", action="store_true")
+        if name == "baseline":
+            command.add_argument("--message")
+        if name == "sync":
+            command.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
         command.set_defaults(func=function)
     args = parser.parse_args(argv)
     try:

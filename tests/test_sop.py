@@ -31,6 +31,29 @@ class SopTests(unittest.TestCase):
     def save_config(self, config):
         sop.write_json(self.root / ".sop/project.json", config)
 
+    def baseline(self):
+        self.assertEqual(self.call("baseline", "--project", self.root), 0)
+
+    def sync(self, stage=None):
+        args = ["sync", "--project", self.root]
+        if stage:
+            args.extend(["--stage", stage])
+        self.assertEqual(self.call(*args), 0)
+
+    def tasks_done(self):
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 1,
+            "tasks": [{
+                "id": "T-001",
+                "status": "done",
+                "ac_ids": ["AC-001"],
+                "implementation": ["source.py"],
+                "tests": ["tests/test_feature.py"],
+                "evidence": [".sop/evidence/latest.json"],
+                "verification": "passed",
+            }],
+        })
+
     def configure_success(self):
         config = self.config()
         for name in sop.requirements(config)["commands"]:
@@ -94,7 +117,89 @@ class SopTests(unittest.TestCase):
         (self.root / ".sop/docs/constitution.md").write_text("# Empty\n")
         self.assertEqual(self.call("check", "--project", self.root), 1)
         self.fill_docs()
+        self.baseline()
+        self.sync()
         self.assertEqual(self.call("check", "--project", self.root), 0)
+
+    def test_local_git_baseline_and_sync_are_required(self):
+        self.init()
+        self.fill_docs()
+        self.assertTrue((self.root / ".git").exists())
+        self.assertEqual(self.call("check", "--project", self.root), 1)
+        self.baseline()
+        self.assertTrue((self.root / ".sop/git-baseline.json").exists())
+        self.assertEqual(self.call("check", "--project", self.root), 1)
+        self.sync()
+        self.assertEqual(self.call("check", "--project", self.root), 0)
+        (self.root / "new-source.py").write_text("x = 1\n", encoding="utf-8")
+        self.assertEqual(self.call("check", "--project", self.root), 1)
+
+    def test_audit_checks_ac_and_declared_paths(self):
+        self.init("M")
+        self.fill_docs()
+        self.baseline()
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 1,
+            "tasks": [{
+                "id": "T-001", "status": "in_progress", "ac_ids": ["AC-999"],
+                "implementation": ["missing.py"], "tests": ["tests/missing.py"],
+                "evidence": ["local evidence"], "verification": "partial",
+            }],
+        })
+        self.assertEqual(self.call("audit", "--project", self.root, "--stage", "L3"), 1)
+        requirements = self.root / ".sop/docs/requirements.md"
+        requirements.write_text(requirements.read_text(encoding="utf-8") + "\nAC-999\n", encoding="utf-8")
+        (self.root / "missing.py").write_text("x = 1\n", encoding="utf-8")
+        (self.root / "tests").mkdir()
+        (self.root / "tests/missing.py").write_text("# test\n", encoding="utf-8")
+        self.assertEqual(self.call("audit", "--project", self.root, "--stage", "L3"), 0)
+
+    def test_audit_requires_platform_evidence_when_enabled(self):
+        self.init("M")
+        self.fill_docs()
+        self.baseline()
+        config = self.config()
+        config["platform"] = {"required": True, "name": "Android"}
+        self.save_config(config)
+        (self.root / ".sop/docs/requirements.md").write_text(
+            (self.root / ".sop/docs/requirements.md").read_text(encoding="utf-8") + "\nAC-001\n",
+            encoding="utf-8")
+        (self.root / "source.py").write_text("x = 1\n", encoding="utf-8")
+        (self.root / "tests").mkdir()
+        (self.root / "tests/test.py").write_text("# test\n", encoding="utf-8")
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 1,
+            "tasks": [{
+                "id": "T-001", "status": "in_progress", "ac_ids": ["AC-001"],
+                "implementation": ["source.py"], "tests": ["tests/test.py"], "evidence": ["local"],
+                "verification": "partial",
+            }],
+        })
+        self.assertEqual(self.call("audit", "--project", self.root, "--stage", "L3"), 1)
+        record = sop.read_json(self.root / ".sop/platform-verification.json")
+        record.update({"platform": "Android", "tool": "Android Emulator",
+                       "tool_version": "test", "source_root": "app",
+                       "compile": "passed", "smoke": "passed"})
+        sop.write_json(self.root / ".sop/platform-verification.json", record)
+        self.assertEqual(self.call("audit", "--project", self.root, "--stage", "L3"), 0)
+
+    def test_done_task_requires_test_and_verification_sync(self):
+        self.init("M")
+        self.fill_docs()
+        self.baseline()
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 1,
+            "tasks": [{
+                "id": "T-001", "status": "done", "ac_ids": ["AC-001"],
+                "implementation": ["source.py"], "tests": ["tests/test.py"],
+                "evidence": [".sop/evidence/latest.json"],
+                "verification": "pending",
+            }],
+        })
+        self.assertEqual(self.call("sync", "--project", self.root, "--stage", "L3"), 2)
+        self.tasks_done()
+        self.sync("L3")
+        self.assertEqual(self.call("check", "--project", self.root, "--stage", "L3"), 1)
 
     def test_missing_command_does_not_pass(self):
         self.init()
@@ -133,6 +238,28 @@ class SopTests(unittest.TestCase):
                 target = target.split("#")[0]
                 self.assertTrue((path.parent / target).exists(), (path, target))
 
+    def test_platform_validation_guidance_is_packaged(self):
+        self.init()
+        validation = (self.root / ".sop/core/stages/05-validation.md").read_text(encoding="utf-8")
+        protocol = (self.root / ".sop/runtime/docs/protocol.md").read_text(encoding="utf-8")
+        workflow = (self.root / ".sop/core/workflow.md").read_text(encoding="utf-8")
+        agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("目标平台与源码边界", validation)
+        self.assertIn("目标平台/运行时", protocol)
+        self.assertIn("平台编译/打包", agents)
+        self.assertIn("每次任务的强制闭环", workflow)
+        self.assertIn("`check --stage L4`", workflow)
+        self.assertIn("scope_sha256", protocol)
+        self.assertIn("UI 与手势验证", validation)
+        self.assertIn("生产级证据链", protocol)
+        self.assertIn("重新评估 risk", agents)
+        self.assertIn("state.json.target_stage", agents)
+        self.assertIn("audit --stage", agents)
+        self.assertTrue((self.root / ".sop/platform-verification.json").exists())
+        self.assertTrue((self.root / ".sop/runtime/docs/platforms.md").exists())
+        self.assertIn("状态、基线与恢复", (self.root / ".sop/docs/plan.md").read_text(encoding="utf-8"))
+        self.assertIn("交付门核对", (self.root / ".sop/docs/handover.md").read_text(encoding="utf-8"))
+
     def test_command_failure_and_log(self):
         self.init()
         config = self.config()
@@ -164,6 +291,9 @@ class SopTests(unittest.TestCase):
         self.init()
         self.configure_success()
         self.fill_docs()
+        self.tasks_done()
+        self.baseline()
+        self.sync("L4")
         self.assertEqual(self.call("verify", "--project", self.root), 0)
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L4"), 1)
         self.approve("acceptance")
@@ -175,6 +305,9 @@ class SopTests(unittest.TestCase):
         self.init()
         self.configure_success()
         self.fill_docs()
+        self.tasks_done()
+        self.baseline()
+        self.sync("L4")
         self.call("verify", "--project", self.root)
         self.approve("acceptance")
         report = sop.read_json(self.root / ".sop/evidence/latest.json")
@@ -201,6 +334,8 @@ class SopTests(unittest.TestCase):
         self.fill_docs()
         self.approve("requirements")
         self.approve("design")
+        self.baseline()
+        self.sync("L2")
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L2"), 0)
         (self.root / ".sop/docs/requirements.md").write_text("# Requirement\nNew behavior.")
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L2"), 1)
@@ -239,6 +374,9 @@ class SopTests(unittest.TestCase):
         self.init()
         self.configure_success()
         self.fill_docs()
+        self.tasks_done()
+        self.baseline()
+        self.sync("L4")
         self.approve("acceptance")
         path = self.root / ".sop/state.json"
         state = sop.read_json(path)
@@ -252,6 +390,9 @@ class SopTests(unittest.TestCase):
         self.assertTrue((self.root / ".sop/docs/wireframe.md").exists())
         self.configure_success()
         self.fill_docs()
+        self.tasks_done()
+        self.baseline()
+        self.sync("L4")
         self.call("verify", "--project", self.root)
         self.approve("acceptance")
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L4"), 1)
@@ -321,8 +462,12 @@ class SopTests(unittest.TestCase):
         self.save_config(config)
         for name in sop.requirements(config)["documents"] + ["handover"]:
             self.assertEqual(sop.document_issues(self.root, name), [], name)
+        self.tasks_done()
+        self.baseline()
+        self.sync("L0")
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L0"), 0)
         self.assertEqual(self.call("verify", "--project", self.root), 0)
+        self.sync("L4")
         report = sop.read_json(self.root / ".sop/evidence/latest.json")
         test_log = (self.root / report["results"]["test"]["log"]).read_text(encoding="utf-8")
         self.assertIn("Ran 9 tests", test_log)
