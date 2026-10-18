@@ -15,14 +15,26 @@ import uuid
 
 PACKAGE = Path(__file__).resolve().parent
 DOC_STAGE = {"constitution": 0, "requirements": 1, "glossary": 1,
-             "wireframe": 1, "design": 2, "risk": 2, "plan": 3,
+             "wireframe": 1, "design": 2, "architecture": 2,
+             "api-contract": 2, "data-migrations": 2, "risk": 2, "plan": 3,
+             "environments": 3,
+             "plan": 3,
              "tasks": 3, "regression": 3, "development": 3,
              "research": 1, "validation": 4}
-MODULES = ("glossary", "wireframe", "regression", "research", "development")
+MODULES = ("glossary", "wireframe", "regression", "research", "development",
+           "architecture", "api-contract", "data-migrations", "environments")
+STACK_MODULES = {
+    "default": (),
+    "full-stack": ("architecture", "api-contract", "data-migrations", "environments"),
+}
+STACK_COMMANDS = {
+    "default": (),
+    "full-stack": ("integration",),
+}
 REVIEW_STAGE = {"constitution": 0, "requirements": 1, "design": 2,
                 "acceptance": 4, "release": 4}
 EXCLUDED = {".git", ".sop", "__pycache__", ".venv", "venv", "node_modules",
-            "target", "dist", "build", ".pytest_cache", ".mypy_cache",
+            "target", "dist", "build", ".pytest_cache", ".mypy_cache", ".jest-cache",
             ".gradle", "coverage", ".next"}
 PLACEHOLDER = re.compile(r"\bTODO\b|\bTBD\b|NEEDS CLARIFICATION|\{\{[^}]+\}\}", re.I)
 TASK_STATUSES = {"planned", "in_progress", "blocked", "done"}
@@ -257,6 +269,8 @@ def load_project(root):
         raise SopError("运行时与锁定版本不一致，请使用项目内运行时")
     if config.get("profile") not in ("S", "M", "L"):
         raise SopError("profile 必须为 S/M/L")
+    if config.get("stack", "default") not in STACK_MODULES:
+        raise SopError("stack 必须为 default/full-stack")
     if config.get("risk") not in ("normal", "high"):
         raise SopError("risk 必须为 normal/high")
     modules = config.get("modules")
@@ -280,7 +294,11 @@ def requirements(config):
         extra = read_json(PACKAGE / "gates/high-risk.json")
         for key in spec:
             spec[key] += extra[key]
-    spec["documents"] = list(dict.fromkeys(spec["documents"] + config["modules"]))
+    stack = config.get("stack", "default")
+    spec["documents"] = list(dict.fromkeys(
+        spec["documents"] + list(STACK_MODULES[stack]) + config["modules"]
+    ))
+    spec["commands"] = list(dict.fromkeys(spec["commands"] + list(STACK_COMMANDS[stack])))
     return spec
 
 
@@ -317,14 +335,17 @@ def init_project(args):
     config = {"schema_version": 1,
               "sop_version": (PACKAGE / "VERSION").read_text().strip(),
               "name": args.name or root.name, "profile": args.profile,
-              "risk": args.risk, "modules": args.module,
+              "risk": args.risk, "stack": args.stack, "modules": args.module,
               "timeout_seconds": 300, "commands": {},
               "platform": {"required": False, "name": ""}}
     spec = requirements(config)
     config["commands"] = {key: [] for key in spec["commands"]}
+    root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
     # Build in a staging dir so invalid assets cannot leave half an installation.
-    with tempfile.TemporaryDirectory(prefix="vibe-sop-") as temporary:
+    staging_parent = root.parent / ".sop-staging"
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="vibe-sop-", dir=staging_parent) as temporary:
         stage = Path(temporary) / ".sop"
         runtime = stage / "runtime"
         runtime.mkdir(parents=True)
@@ -654,6 +675,7 @@ def main(argv=None):
     init.add_argument("--name")
     init.add_argument("--profile", choices=["S", "M", "L"], default="M")
     init.add_argument("--risk", choices=["normal", "high"], default="normal")
+    init.add_argument("--stack", choices=sorted(STACK_MODULES), default="default")
     init.add_argument("--module", choices=MODULES,
                       action="append", default=[])
     init.add_argument("--agent-file", default="AGENTS.md")

@@ -8,11 +8,13 @@ import unittest
 from task_store import TaskStore
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_TEMP_ROOT = ROOT / ".test-temp"
+TEST_TEMP_ROOT.mkdir(exist_ok=True)
 
 
 class TaskTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT)
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "tasks.db"
         self.store = TaskStore(self.path)

@@ -44,7 +44,13 @@ check 只读；verify 执行门禁并保存日志，绑定源码和命令配置�
 | M（默认） | 普通业务应用 | S + 技术设计、开发落点 | test、build | 需求、设计、验收 |
 | L | 跨模块、长周期单 Agent 项目 | M + 术语、任务、回归计划 | test、build、lint | 宪法、需求、设计、验收 |
 
-`--risk high` 对任意档追加 risk 文档、security 命令和发布/回滚复核；`--module` 可按需增加 glossary、wireframe、regression、research、development。所有档生成交接模板，但不要求启动时填写。每个项目必须有本地 Git，不要求远端服务器，但必须有命名基线提交。覆盖率与函数长度由项目自定，不用统一数字代替质量判断。需要真实平台验证时，在 `project.json` 设置 `platform.required=true`，并填写 `.sop/platform-verification.json`。
+`--risk high` 对任意档追加 risk 文档、security 命令和发布/回滚复核；`--module` 可按需增加 glossary、wireframe、regression、research、development。中型全栈项目使用 `--stack full-stack`，会额外生成系统架构、API 契约、数据库迁移和环境矩阵文档；它不强制微服务，默认优先单体后端和一条真实跨层切片。所有档生成交接模板，但不要求启动时填写。每个项目必须有本地 Git，不要求远端服务器，但必须有命名基线提交。覆盖率与函数长度由项目自定，不用统一数字代替质量判断。需要真实平台验证时，在 `project.json` 设置 `platform.required=true`，并填写 `.sop/platform-verification.json`。
+
+```sh
+python sop.py init ./my-project --profile M --risk high --stack full-stack
+```
+
+Full-stack 项目的最低验证闭环是：客户端 → API → 业务服务 → 数据库 → API → 客户端。各层 Mock 或单测不能替代真实跨层验证；开发库和测试库必须隔离。
 
 ## 具体如何做
 

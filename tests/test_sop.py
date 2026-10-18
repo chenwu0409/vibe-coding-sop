@@ -14,7 +14,9 @@ import sop
 
 class SopTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        test_temp_root = Path(__file__).parent / ".test-temp"
+        test_temp_root.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=test_temp_root)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "项目 with spaces"
 
@@ -238,6 +240,16 @@ class SopTests(unittest.TestCase):
                 target = target.split("#")[0]
                 self.assertTrue((path.parent / target).exists(), (path, target))
 
+    def test_full_stack_stack_generates_cross_boundary_docs(self):
+        self.assertEqual(self.call("init", self.root, "--profile", "M",
+                                   "--risk", "high", "--stack", "full-stack"), 0)
+        config = self.config()
+        self.assertEqual(config["stack"], "full-stack")
+        for name in ("architecture", "api-contract", "data-migrations", "environments"):
+            self.assertTrue((self.root / ".sop/docs" / (name + ".md")).is_file())
+        agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("第一条切片必须穿过真实客户端、API、业务服务和数据库", agents)
+
     def test_platform_validation_guidance_is_packaged(self):
         self.init()
         validation = (self.root / ".sop/core/stages/05-validation.md").read_text(encoding="utf-8")
@@ -437,6 +449,14 @@ class SopTests(unittest.TestCase):
                               "init", str(second)], capture_output=True)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse((second / ".sop/runtime/examples/task-list/build").exists())
+
+    def test_generated_jest_cache_does_not_invalidate_source_fingerprint(self):
+        self.init()
+        before = sop.fingerprint(self.root)
+        cache = self.root / ".jest-cache"
+        cache.mkdir()
+        (cache / "transform-cache").write_text("generated", encoding="utf-8")
+        self.assertEqual(sop.fingerprint(self.root), before)
 
     def test_real_example_tests(self):
         shutil.copytree(sop.PACKAGE / "examples/counter", self.root,
