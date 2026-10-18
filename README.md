@@ -34,6 +34,8 @@ python .sop/runtime/sop.py handover
 
 每个任务和环节完成后必须同步：更新 `.sop/tasks.json` 的任务状态、AC/代码/测试/证据字段，同时更新受影响的 plan/development/validation/risk 文档，再运行 `python .sop/runtime/sop.py sync`。v2 任务清单用 `release.required_task_ids` 和 `required_ac_ids` 定义本次交付范围；L4 要求这些任务全部 done/passed 且 AC 被覆盖。`check` 会校验同步指纹；源码、配置、任务清单或阶段文档发生变化而未重新同步时，检查失败。同步不是人工审批，也不能替代真实平台验证。
 
+任务状态优先使用受控命令推进：`python .sop/runtime/sop.py task start T-001`、`task verify T-001`、`task done T-001`；无法验证时使用 `task block T-001 --reason "平台 CLI 不可用" --owner "项目负责人" --next-action "打开工具并提供编译证据"`。`checkpoint --stage L3` 会检查真实 verify 证据、audit、已完成任务和干净 Git 工作区。
+
 提交已完成切片后运行 `checkpoint --task T-001`；最终治理记录提交后运行 `checkpoint --stage L4`。新协议的 L4 同时要求任务检查点和当前 HEAD 的最终检查点。工具不会执行无差别 `git add .`，提交前由 Agent 审阅暂存内容和秘密文件。
 
 进入 L3/L4 前另运行 `audit`：它检查 AC 是否存在、任务声明的代码/测试路径是否存在，以及启用目标平台时是否有完整的平台编译/冒烟记录。`audit` 是语义一致性检查，不代替测试或人工验收。

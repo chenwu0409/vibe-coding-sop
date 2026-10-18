@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 — 2026-10-19
+
+- 增加受控任务状态命令 `task start/block/verify/done`，阻止直接把没有测试或证据的任务标记为 done/passed。
+- 增加 L3 checkpoint 硬门禁：要求真实 verify 证据、项目门禁、audit、至少一项 done/passed 任务和干净 Git 工作区。
+- 明确 blocked/unverified 的记录方式，平台工具不可用、数据库权限不足或提交失败时必须登记原因、责任人和下一步。
+- 增强 Agent 入口、Skill、协议和 README，区分实现完成、验证完成和阶段交付完成。
+
 ## 0.3.0 — 2026-10-18
 
 - `tasks.json` v2 增加 release scope；L4 强制本次任务全部 done/passed，且 required AC 被任务覆盖。

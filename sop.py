@@ -40,6 +40,12 @@ PLACEHOLDER = re.compile(r"\bTODO\b|\bTBD\b|NEEDS CLARIFICATION|\{\{[^}]+\}\}", 
 TASK_STATUSES = {"planned", "in_progress", "blocked", "done"}
 VERIFICATION_STATUSES = {"pending", "partial", "passed", "blocked"}
 ENVIRONMENT_STATUSES = {"not_run", "passed", "failed", "blocked", "not_applicable"}
+TASK_TRANSITIONS = {
+    "start": ("in_progress", "pending"),
+    "block": ("blocked", "blocked"),
+    "verify": ("in_progress", "passed"),
+    "done": ("done", "passed"),
+}
 MAX_LOG_BYTES = 10 * 1024 * 1024
 
 
@@ -257,6 +263,79 @@ def task_issues(root, stage):
     return issues
 
 
+def task_entry(root, task_id):
+    path = root / ".sop/tasks.json"
+    if not path.is_file():
+        raise SopError("缺少 .sop/tasks.json：先初始化任务清单")
+    board = read_json(path)
+    tasks = board.get("tasks") if isinstance(board, dict) else None
+    if not isinstance(tasks, list):
+        raise SopError(".sop/tasks.json 的 tasks 必须为数组")
+    task = next((item for item in tasks
+                 if isinstance(item, dict) and item.get("id") == task_id), None)
+    if task is None:
+        raise SopError("任务不存在: " + task_id)
+    return board, task
+
+
+def task_transition_issues(root, task, action):
+    if action not in TASK_TRANSITIONS:
+        return ["未知任务动作: " + action]
+    target_status, target_verification = TASK_TRANSITIONS[action]
+    issues = []
+    if action == "start" and task.get("status") not in ("planned", "blocked"):
+        issues.append("只有 planned/blocked 任务可以 start")
+    if action == "block" and task.get("status") == "done":
+        issues.append("done 任务不能直接标记 blocked；先重新打开任务并说明影响")
+    if action in ("verify", "done"):
+        for field in ("ac_ids", "implementation", "tests", "evidence"):
+            values = task.get(field)
+            if not isinstance(values, list) or not values:
+                issues.append("任务缺少非空 " + field)
+        for value in task.get("tests", []):
+            if not declared_path_exists(root, value):
+                issues.append("tests 路径不存在: " + str(value))
+        for value in task.get("evidence", []):
+            if not evidence_path_exists(root, value):
+                issues.append("evidence 文件不存在或为空: " + str(value))
+        if task.get("status") == "planned":
+            issues.append("任务必须先 start，再进行验证")
+    if action == "block":
+        for field in ("defer_reason", "owner", "next_action"):
+            if not isinstance(task.get(field), str) or not task[field].strip():
+                issues.append("blocked 任务必须填写 " + field)
+    if action == "done" and task.get("verification") != "passed":
+        issues.append("任务必须先通过 task verify，才能 done")
+    return issues
+
+
+def task_project(args):
+    root = Path(args.project).resolve()
+    load_project(root)
+    board, task = task_entry(root, args.task)
+    if args.action == "block":
+        if args.reason:
+            task["defer_reason"] = args.reason
+        if args.owner:
+            task["owner"] = args.owner
+        if args.next_action:
+            task["next_action"] = args.next_action
+    issues = task_transition_issues(root, task, args.action)
+    if issues:
+        raise SopError("任务状态转换被阻止:\n- " + "\n- ".join(issues))
+    target_status, target_verification = TASK_TRANSITIONS[args.action]
+    task["status"] = target_status
+    task["verification"] = target_verification
+    if args.action == "block":
+        task["delivery_disposition"] = "backlog"
+    if args.note:
+        task["status_note"] = args.note
+    write_json(root / ".sop/tasks.json", board)
+    print(f"任务 {args.task} 已转换为 {target_status}/{target_verification}")
+    print("下一步必须更新相关文档并运行 sync；本命令不替代测试、audit 或 checkpoint")
+    return 0
+
+
 def delivery_task_issues(root, stage):
     """Delivery readiness is stricter than the structural checks used by sync."""
     if stage < 4:
@@ -273,6 +352,10 @@ def delivery_task_issues(root, stage):
             continue
         if task.get("status") != "done" or task.get("verification") != "passed":
             issues.append(f"任务 {task.get('id')} 属于本次交付范围，L4 要求 status=done 且 verification=passed")
+        else:
+            for evidence in task.get("evidence", []):
+                if not evidence_path_exists(root, evidence):
+                    issues.append(f"任务 {task.get('id')} 的 evidence 不存在或为空: {evidence}")
     return issues
 
 
@@ -292,6 +375,15 @@ def declared_path_exists(root, value):
     if any(character in value for character in "*?[]"):
         return any(root.glob(value))
     return (root / path).is_file()
+
+
+def evidence_path_exists(root, value):
+    if not declared_path_exists(root, value):
+        return False
+    try:
+        return (root / value).stat().st_size > 0
+    except (OSError, TypeError):
+        return False
 
 
 def audit_issues(root, config, stage):
@@ -323,6 +415,10 @@ def audit_issues(root, config, stage):
                     issues.append(prefix + f" {field} 路径不存在: {declared}")
         if task.get("status") == "done" and task.get("verification") != "passed":
             issues.append(prefix + " done 必须对应 verification=passed")
+        if task.get("status") == "done" and task.get("verification") == "passed":
+            for evidence in task.get("evidence", []):
+                if not evidence_path_exists(root, evidence):
+                    issues.append(prefix + " evidence 文件不存在或为空: " + str(evidence))
     if stage == 4:
         if board.get("schema_version") == 2:
             release = board.get("release", {})
@@ -747,6 +843,38 @@ def inspection(root, config, stage):
 
 
 def checkpoint_issues(root, stage):
+    if stage == 3:
+        config = load_project(root)
+        issues = task_issues(root, 3) + audit_issues(root, config, 3)
+        task_path = root / ".sop/tasks.json"
+        if not task_path.is_file():
+            return issues
+        board = read_json(task_path)
+        completed = [task for task in board.get("tasks", [])
+                     if isinstance(task, dict)
+                     and task.get("status") == "done"
+                     and task.get("verification") == "passed"]
+        if not completed:
+            issues.append("L3 至少需要一项通过真实验证的 done 任务")
+        report_path = root / ".sop/evidence/latest.json"
+        report = read_json(report_path) if report_path.is_file() else {}
+        fresh = (report.get("source_unchanged") is True
+                 and report.get("source_sha256") == fingerprint(root)
+                 and report.get("config_sha256") == json_digest(config))
+        if not fresh:
+            issues.append("L3 缺少当前源码和配置对应的 verify 证据")
+        for name in requirements(config)["commands"]:
+            result = report.get("results", {}).get(name, {})
+            if result.get("status") != "passed" or result.get("exit_code") != 0:
+                issues.append("L3 自动门禁未通过: " + name)
+        git_issues = local_git_issues(root)
+        if git_issues:
+            issues.extend(git_issues)
+        else:
+            status = git_run(root, ["status", "--porcelain", "--untracked-files=all"])
+            if status.stdout.strip():
+                issues.append("L3 checkpoint 要求 Git 工作区干净；先审阅并提交实现")
+        return issues
     if stage < 4:
         return []
     task_path = root / ".sop/tasks.json"
@@ -1181,6 +1309,16 @@ def main(argv=None):
         if name == "sync":
             command.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
         command.set_defaults(func=function)
+    task = sub.add_parser("task", help="通过受控状态转换更新任务清单")
+    task.add_argument("action", choices=sorted(TASK_TRANSITIONS),
+                      help="start/block/verify/done；verify 只登记已存在的真实证据")
+    task.add_argument("task", help="任务 ID，例如 T-001")
+    task.add_argument("--project", default=".")
+    task.add_argument("--note")
+    task.add_argument("--reason", help="block 时的阻塞原因")
+    task.add_argument("--owner", help="block 时的责任人")
+    task.add_argument("--next-action", help="block 时的下一步")
+    task.set_defaults(func=task_project)
     checkpoint = sub.add_parser("checkpoint", help="登记已提交且可恢复的任务或阶段检查点")
     checkpoint.add_argument("--project", default=".")
     target = checkpoint.add_mutually_exclusive_group(required=True)

@@ -30,6 +30,8 @@ S 要求 test；M 加 build；L 加 lint；high 对任意档加 security。具�
 
 `audit` 是显式的语义一致性检查：它确认任务引用的 AC 在 requirements 中存在，implementation/tests 声明的路径在项目内存在，release AC 有任务覆盖；全栈项目核对交付环境的逐项状态；当 `platform.required=true` 时，L4 只接受 `attest-platform` 生成且证据哈希、源码指纹和 Git 历史仍有效的平台凭据。它不判断测试断言质量，也不替代真实用户验收。
 
+任务状态由 `task` 命令提供受控转换：`start` 将 planned/blocked 转为 in_progress/pending；`verify` 仅在 AC、代码、测试路径真实存在且 evidence 文件真实存在、非空时转为 in_progress/passed；`done` 只接受已经 passed 的任务；`block` 要求填写 `defer_reason`、`owner` 和 `next_action`，并转为 blocked/blocked。直接编辑 JSON 仍可被读取以兼容旧项目，但 `check`/`audit`/checkpoint 会拒绝不一致状态。
+
 检查不判断自然语言内容是否正确；随意填一句话仍可能通过结构检查。因此通过不等于内容审查通过，尤其不能代替独立业务预期和可失败的测试断言。具体内容审查见 core/stages。
 
 S 的计划兼任开发落点记录；M/L 增加 development 文档。所有档在 L4 要求 validation，记录 AC→TC→测试位置/实际证据、失败及未验证项。脚本只保存命令退出码和日志，不自动解析用例数量、生成覆盖率或跨语言 TC 映射。
@@ -43,6 +45,8 @@ S 的计划兼任开发落点记录；M/L 增加 development 文档。所有档�
 下列变化会使相应范围的人工复核失效：需求/AC、宪法、设计、计划、平台源码边界、项目配置、共享接口或源码变化。工具用 `scope_sha256` 判定范围是否仍一致；一旦输出“复核范围已变化”，Agent 必须说明受影响的复核名称和新的 scope，重新取得真实复核，或明确将任务保持为待复核/未交付。只改内部实现也会使 acceptance/release 范围变化，这是有意的；它确保验收针对当前源码。
 
 实现可以在需求/设计复核 pending 时继续的条件只有一个：工作是独立探索、原型或风险实验，且不把结果称为已交付；凡依赖变更后业务语义、共享契约或平台边界的实现，先完成对应复核再进入交付门。
+
+L3 checkpoint 是实现阶段出口，不是文字记录。它要求至少一项任务已经 done/passed，当前源码和配置有新鲜且成功的 `verify` 报告，所有项目门禁通过，`audit --stage L3` 无问题，且本地 Git 工作区干净。未验证的平台或环境只能登记为 blocked/unverified，不能转换为完成证据。
 
 UI、触摸/手势、平台导入、默认值和错误提示属于外部可观察行为。纯函数、Node/Python 测试只能证明其对应逻辑 seam；每个适用行为还要有真实界面人工步骤、端到端测试或目标平台编译/导入证据。平台工具不可用时，记录具体 ENV 阻塞、替代检查、责任人和未验证状态，L4 不能写成完整通过。
 

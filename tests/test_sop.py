@@ -228,6 +228,59 @@ class SopTests(unittest.TestCase):
         self.sync("L3")
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L3"), 1)
 
+    def test_task_state_command_requires_real_transition_and_paths(self):
+        self.init("S")
+        self.baseline()
+        (self.root / "source.py").write_text("x = 1\n", encoding="utf-8")
+        (self.root / "tests").mkdir(exist_ok=True)
+        (self.root / "tests/test_feature.py").write_text("assert True\n", encoding="utf-8")
+        evidence = self.root / ".sop/evidence/run.json"
+        evidence.parent.mkdir(exist_ok=True)
+        evidence.write_text("{\"status\": \"passed\"}\n", encoding="utf-8")
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 1,
+            "tasks": [{
+                "id": "T-001", "status": "planned", "verification": "pending",
+                "ac_ids": ["AC-001"], "implementation": ["source.py"],
+                "tests": ["tests/test_feature.py"],
+                "evidence": [".sop/evidence/run.json"],
+            }],
+        })
+        self.assertEqual(self.call("task", "done", "T-001", "--project", self.root), 2)
+        self.assertEqual(self.call("task", "start", "T-001", "--project", self.root), 0)
+        self.assertEqual(self.call("task", "verify", "T-001", "--project", self.root), 0)
+        self.assertEqual(self.call("task", "done", "T-001", "--project", self.root), 0)
+        task = sop.read_json(self.root / ".sop/tasks.json")["tasks"][0]
+        self.assertEqual((task["status"], task["verification"]), ("done", "passed"))
+
+    def test_l3_checkpoint_requires_fresh_verify_and_clean_git(self):
+        self.init("S")
+        self.baseline()
+        config = self.config()
+        config["commands"]["test"] = [sys.executable, "-c", "print('test passed')"]
+        self.save_config(config)
+        requirements = self.root / ".sop/docs/requirements.md"
+        requirements.write_text(requirements.read_text(encoding="utf-8") + "\nAC-001\n",
+                                encoding="utf-8")
+        (self.root / "source.py").write_text("x = 1\n", encoding="utf-8")
+        (self.root / "tests").mkdir(exist_ok=True)
+        (self.root / "tests/test_feature.py").write_text("assert True\n", encoding="utf-8")
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 1,
+            "tasks": [{
+                "id": "T-001", "status": "done", "verification": "passed",
+                "ac_ids": ["AC-001"], "implementation": ["source.py"],
+                "tests": ["tests/test_feature.py"],
+                "evidence": [".sop/evidence/latest.json"],
+            }],
+        })
+        self.assertEqual(self.call("checkpoint", "--project", self.root, "--stage", "L3"), 2)
+        self.assertEqual(self.call("verify", "--project", self.root), 0)
+        subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-m", "feat: complete T-001"],
+                       check=True, capture_output=True)
+        self.assertEqual(self.call("checkpoint", "--project", self.root, "--stage", "L3"), 0)
+
     def test_l4_blocks_unfinished_required_tasks_and_uncovered_ac(self):
         self.init("M")
         self.fill_docs()
