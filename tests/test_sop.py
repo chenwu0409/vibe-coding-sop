@@ -43,6 +43,9 @@ class SopTests(unittest.TestCase):
         self.assertEqual(self.call(*args), 0)
 
     def tasks_done(self):
+        (self.root / "source.py").write_text("x = 1\n", encoding="utf-8")
+        (self.root / "tests").mkdir(exist_ok=True)
+        (self.root / "tests/test_feature.py").write_text("# test fixture\n", encoding="utf-8")
         sop.write_json(self.root / ".sop/tasks.json", {
             "schema_version": 1,
             "tasks": [{
@@ -53,6 +56,25 @@ class SopTests(unittest.TestCase):
                 "tests": ["tests/test_feature.py"],
                 "evidence": [".sop/evidence/latest.json"],
                 "verification": "passed",
+            }],
+        })
+
+    def release_tasks(self, status="done", verification="passed"):
+        sop.write_json(self.root / ".sop/tasks.json", {
+            "schema_version": 2,
+            "release": {
+                "id": "R-TEST",
+                "required_task_ids": ["T-001"],
+                "required_ac_ids": ["AC-001"],
+            },
+            "tasks": [{
+                "id": "T-001",
+                "status": status,
+                "ac_ids": ["AC-001"],
+                "implementation": ["source.py"],
+                "tests": ["tests/test_feature.py"],
+                "evidence": [".sop/evidence/latest.json"],
+                "verification": verification,
             }],
         })
 
@@ -69,6 +91,9 @@ class SopTests(unittest.TestCase):
                 "\n## " + heading + "\nTest-only fixture, not a real decision.\n"
                 for heading in sections[path.stem])
             path.write_text(content, encoding="utf-8")
+        requirements = self.root / ".sop/docs/requirements.md"
+        requirements.write_text(requirements.read_text(encoding="utf-8") + "\nAC-001\n",
+                                encoding="utf-8")
 
     def approve(self, name):
         # Test-only fake reviewer. Production code never writes approved records.
@@ -203,6 +228,177 @@ class SopTests(unittest.TestCase):
         self.sync("L3")
         self.assertEqual(self.call("check", "--project", self.root, "--stage", "L3"), 1)
 
+    def test_l4_blocks_unfinished_required_tasks_and_uncovered_ac(self):
+        self.init("M")
+        self.fill_docs()
+        self.baseline()
+        (self.root / "source.py").write_text("x = 1\n", encoding="utf-8")
+        (self.root / "tests").mkdir()
+        (self.root / "tests/test_feature.py").write_text("# test\n", encoding="utf-8")
+        requirements = self.root / ".sop/docs/requirements.md"
+        requirements.write_text(requirements.read_text(encoding="utf-8") + "\nAC-001\n", encoding="utf-8")
+        self.release_tasks(status="in_progress", verification="partial")
+        issues = sop.delivery_task_issues(self.root, 4)
+        self.assertTrue(any("T-001" in issue and "L4" in issue for issue in issues), issues)
+
+        board = sop.read_json(self.root / ".sop/tasks.json")
+        board["tasks"][0]["status"] = "done"
+        board["tasks"][0]["verification"] = "passed"
+        board["release"]["required_ac_ids"].append("AC-002")
+        sop.write_json(self.root / ".sop/tasks.json", board)
+        issues = sop.audit_issues(self.root, self.config(), 4)
+        self.assertTrue(any("AC-002" in issue and "覆盖" in issue for issue in issues), issues)
+
+        board["release"]["required_task_ids"] = []
+        board["release"]["required_ac_ids"] = []
+        board["tasks"][0]["status"] = "planned"
+        board["tasks"][0]["verification"] = "pending"
+        sop.write_json(self.root / ".sop/tasks.json", board)
+        issues = sop.task_issues(self.root, 4)
+        self.assertTrue(any("required_task_ids" in issue for issue in issues), issues)
+        self.assertTrue(any("delivery_disposition=backlog" in issue for issue in issues), issues)
+
+    def test_environment_status_is_scoped_and_blocks_delivery_environment(self):
+        self.init("M")
+        config = self.config()
+        config["stack"] = "full-stack"
+        config["environments"] = {"required": True, "delivery": "local-dev"}
+        self.save_config(config)
+        sop.write_json(self.root / ".sop/environment-verification.json", {
+            "schema_version": 1,
+            "delivery_environment": "local-dev",
+            "environments": {
+                "test": {"database_migration": {"status": "passed", "evidence": ["test.log"]}},
+                "local-dev": {"database_migration": {"status": "blocked", "evidence": [],
+                                                       "blocker": "missing CREATE privilege"}},
+            },
+        })
+        issues = sop.environment_issues(self.root, config, 4)
+        self.assertTrue(any("local-dev" in issue and "database_migration" in issue for issue in issues), issues)
+
+    def test_manual_platform_pass_is_not_machine_attestation(self):
+        self.init("M")
+        config = self.config()
+        config["platform"] = {"required": True, "name": "wechat-miniapp"}
+        self.save_config(config)
+        record = sop.read_json(self.root / ".sop/platform-verification.json")
+        record.update({"platform": "wechat-miniapp", "tool": "wechatide",
+                       "tool_version": "test", "source_root": "miniprogram",
+                       "compile": "passed", "smoke": "passed"})
+        sop.write_json(self.root / ".sop/platform-verification.json", record)
+        issues = sop.platform_issues(self.root, config, 4)
+        self.assertTrue(any("attest" in issue.lower() or "凭据" in issue for issue in issues), issues)
+
+    def test_platform_attest_binds_evidence_and_git_commit(self):
+        self.init("M")
+        config = self.config()
+        config["platform"] = {"required": True, "name": "wechat-miniapp"}
+        self.save_config(config)
+        self.baseline()
+        evidence = self.root / ".sop/evidence/wechat.txt"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        evidence.write_text("compile and smoke passed", encoding="utf-8")
+        self.assertEqual(self.call(
+            "attest-platform", "--project", self.root,
+            "--environment", "local-dev", "--tool", "wechatide",
+            "--tool-version", "test", "--source-root", "miniprogram",
+            "--compile-evidence", ".sop/evidence/wechat.txt",
+            "--smoke-evidence", ".sop/evidence/wechat.txt"), 0)
+        self.assertEqual(sop.platform_issues(self.root, config, 4), [])
+        subprocess.run(["git", "-C", str(self.root), "add", ".sop/platform-verification.json"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-m",
+                        "chore: record platform evidence"], check=True, capture_output=True)
+        self.assertEqual(sop.platform_issues(self.root, config, 4), [])
+        evidence.write_text("tampered", encoding="utf-8")
+        self.assertTrue(sop.platform_issues(self.root, config, 4))
+
+    def test_verify_redacts_secrets_and_cleanup_receives_same_run_id(self):
+        self.init()
+        config = self.config()
+        marker = self.root / "build/cleanup.txt"
+        config["commands"]["test"] = [
+            sys.executable, "-c",
+            "import os; print('Authorization: Bearer secret-token'); "
+            "print('DATABASE_URL=postgresql://user:password@localhost/db'); "
+            "print('RUN=' + os.environ['SOP_RUN_ID'])",
+        ]
+        config["test_lifecycle"] = {
+            "setup": [],
+            "cleanup": [sys.executable, "-c",
+                        "import os,pathlib; pathlib.Path('build').mkdir(exist_ok=True); "
+                        "pathlib.Path('build/cleanup.txt').write_text(os.environ['SOP_RUN_ID'])"],
+        }
+        self.save_config(config)
+        self.assertEqual(self.call("verify", "--project", self.root), 0)
+        report = sop.read_json(self.root / ".sop/evidence/latest.json")
+        log = (self.root / report["results"]["test"]["log"]).read_text(encoding="utf-8")
+        self.assertNotIn("secret-token", log)
+        self.assertNotIn("user:password", log)
+        self.assertIn("[REDACTED", log)
+        self.assertEqual(marker.read_text(encoding="utf-8"), report["run_id"])
+        self.assertEqual(report["lifecycle"]["cleanup"]["status"], "passed")
+
+    def test_cleanup_runs_after_failed_test_and_failure_is_preserved(self):
+        self.init()
+        config = self.config()
+        config["commands"]["test"] = [sys.executable, "-c", "raise SystemExit(9)"]
+        config["test_lifecycle"] = {
+            "setup": [],
+            "cleanup": [sys.executable, "-c",
+                        "import pathlib; pathlib.Path('cleanup-ran').write_text('yes')"],
+        }
+        self.save_config(config)
+        self.assertEqual(self.call("verify", "--project", self.root), 1)
+        self.assertTrue((self.root / "cleanup-ran").is_file())
+
+    def test_cleanup_failure_fails_otherwise_green_verification(self):
+        self.init()
+        config = self.config()
+        config["commands"]["test"] = [sys.executable, "-c", "print('passed')"]
+        config["test_lifecycle"] = {
+            "setup": [],
+            "cleanup": [sys.executable, "-c", "raise SystemExit(7)"],
+        }
+        self.save_config(config)
+        self.assertEqual(self.call("verify", "--project", self.root), 1)
+        report = sop.read_json(self.root / ".sop/evidence/latest.json")
+        self.assertEqual(report["results"]["test"]["status"], "passed")
+        self.assertEqual(report["lifecycle"]["cleanup"]["status"], "failed")
+
+    def test_checkpoint_requires_clean_commit_and_records_task(self):
+        self.init()
+        self.baseline()
+        (self.root / "source.py").write_text("x = 1\n", encoding="utf-8")
+        self.release_tasks()
+        git = lambda *args: subprocess.run(["git", "-C", str(self.root), *args],
+                                           capture_output=True, check=True)
+        git("add", "source.py", ".sop/tasks.json")
+        git("commit", "-m", "feat(T-001): complete test task")
+        self.assertEqual(self.call("checkpoint", "--project", self.root, "--task", "T-001"), 0)
+        record = sop.read_json(self.root / ".sop/checkpoints.json")
+        self.assertEqual(record["tasks"]["T-001"]["commit"],
+                         git("rev-parse", "HEAD").stdout.decode().strip())
+        self.assertTrue(any("L4" in issue for issue in sop.checkpoint_issues(self.root, 4)))
+        self.assertEqual(self.call("checkpoint", "--project", self.root, "--stage", "L4"), 0)
+        self.assertEqual(sop.checkpoint_issues(self.root, 4), [])
+        (self.root / "dirty.py").write_text("dirty\n", encoding="utf-8")
+        self.assertTrue(any("不干净" in issue for issue in sop.checkpoint_issues(self.root, 4)))
+        self.assertEqual(self.call("checkpoint", "--project", self.root, "--stage", "L4"), 2)
+
+    def test_doctor_finds_tracked_secret_file_and_reserved_platform_directory(self):
+        self.init("M")
+        (self.root / "backend").mkdir()
+        (self.root / "backend/.env.local").write_text("PASSWORD=secret\n", encoding="utf-8")
+        reserved = self.root / "miniprogram/__pycache__"
+        reserved.mkdir(parents=True)
+        (reserved / "bad.js").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "-f", "backend/.env.local",
+                        "miniprogram/__pycache__/bad.js"],
+                       check=True, capture_output=True)
+        self.assertEqual(self.call("doctor", "--project", self.root,
+                                   "--profile", "wechat-fullstack"), 1)
+
     def test_missing_command_does_not_pass(self):
         self.init()
         self.assertEqual(self.call("verify", "--project", self.root), 1)
@@ -247,6 +443,8 @@ class SopTests(unittest.TestCase):
         self.assertEqual(config["stack"], "full-stack")
         for name in ("architecture", "api-contract", "data-migrations", "environments"):
             self.assertTrue((self.root / ".sop/docs" / (name + ".md")).is_file())
+        self.assertTrue((self.root / ".sop/environment-verification.json").is_file())
+        self.assertTrue(config["environments"]["required"])
         agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("第一条切片必须穿过真实客户端、API、业务服务和数据库", agents)
 
@@ -271,6 +469,15 @@ class SopTests(unittest.TestCase):
         self.assertTrue((self.root / ".sop/runtime/docs/platforms.md").exists())
         self.assertIn("状态、基线与恢复", (self.root / ".sop/docs/plan.md").read_text(encoding="utf-8"))
         self.assertIn("交付门核对", (self.root / ".sop/docs/handover.md").read_text(encoding="utf-8"))
+        self.assertTrue((self.root / ".sop/checkpoints.json").exists())
+        self.assertTrue((self.root / ".sop/runtime/templates/checkpoints.json").exists())
+        ignored = subprocess.run(
+            ["git", "-C", str(self.root), "check-ignore", ".sop/checkpoints.json",
+             ".sop/runtime/templates/checkpoints.json"], capture_output=True, text=True)
+        self.assertIn(".sop/checkpoints.json", ignored.stdout)
+        self.assertNotIn(".sop/runtime/templates/checkpoints.json", ignored.stdout)
+        self.assertIn("SOP_RUN_ID", protocol)
+        self.assertIn("attest-platform", agents)
 
     def test_command_failure_and_log(self):
         self.init()

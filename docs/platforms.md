@@ -20,4 +20,12 @@ iOS Simulator 依赖 macOS、Xcode 和模拟器运行时。Windows Agent 不能�
 
 ## 记录要求
 
-启用 `project.json` 的 `platform.required=true` 后，填写 `.sop/platform-verification.json`：记录平台、工具版本、源码根目录、`compile`、`smoke`、证据路径和阻塞原因。只有真实编译和真实冒烟都为 `passed`，平台验证才算通过；`audit` 只检查记录完整性。
+启用 `project.json` 的 `platform.required=true` 后，先保存真实编译和冒烟输出或截图，再运行：
+
+```sh
+python .sop/runtime/sop.py attest-platform --environment local-dev --tool wechatide --tool-version 2.x --source-root miniprogram --compile-evidence .sop/evidence/compile.txt --smoke-evidence .sop/evidence/smoke.txt
+```
+
+该命令只接受项目内已有且非空的证据，将其哈希、工具版本、源码指纹和当前 Git commit/tree 写入 `.sop/platform-verification.json`。证据变化、源码变化或绑定提交不在当前 Git 历史中时，L4 失败。后续仅提交治理文件不会使源码证据过期，但源码变化会。直接手改 `compile/smoke=passed` 只兼容旧版 L3 迁移检查，不能通过 v2 的 L4。
+
+凭据证明“指定证据与指定源码版本绑定且当前未变化”，不能独立证明截图语义真实；UI 行为仍需自动化断言或真实人工验收。平台不可用时保留 blocker，不生成伪 passed 凭据。

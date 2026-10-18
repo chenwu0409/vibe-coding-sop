@@ -87,4 +87,6 @@ state.json 的 target_stage 是本次要检查的阶段，不是自动批准。c
 | 新功能正确但旧路径坏了 | L3/L4 | 影响面、基线测试和实现 |
 | 环境、账号或依赖不可用 | 当前阶段的前置条件 | 证据、替代验证及仍未验证项 |
 
+Full-stack 或目标平台项目开始时先运行 `doctor`；该命令只确认本机前置条件和项目配置的只读探针，不替代迁移、E2E 或平台验证。L4 的固定收口顺序见 `stages/05-validation.md`：release scope → sync/commit/task checkpoint → verify/run cleanup → 平台 attest 与环境矩阵 → audit → 治理提交/L4 checkpoint → 最终 check。
+
 每次交付记录耗时、返工、逃逸缺陷和人工介入，持续裁剪没有帮助决策或验证的文档。当前版本不提供多 Agent 并行、自动合并或自动发版能力。工具不执行自动升级或自动发版。

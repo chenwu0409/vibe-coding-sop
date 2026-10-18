@@ -39,6 +39,8 @@ EXCLUDED = {".git", ".sop", "__pycache__", ".venv", "venv", "node_modules",
 PLACEHOLDER = re.compile(r"\bTODO\b|\bTBD\b|NEEDS CLARIFICATION|\{\{[^}]+\}\}", re.I)
 TASK_STATUSES = {"planned", "in_progress", "blocked", "done"}
 VERIFICATION_STATUSES = {"pending", "partial", "passed", "blocked"}
+ENVIRONMENT_STATUSES = {"not_run", "passed", "failed", "blocked", "not_applicable"}
+MAX_LOG_BYTES = 10 * 1024 * 1024
 
 
 class SopError(Exception):
@@ -61,6 +63,75 @@ def write_json(path, value):
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     temp.write_text(content, encoding="utf-8")
     temp.replace(path)
+
+
+def json_digest(value):
+    payload = json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def redact_text(value):
+    """Remove common credentials before text reaches persistent evidence."""
+    text = value if isinstance(value, str) else str(value)
+    substitutions = (
+        (r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+", r"\1[REDACTED:BEARER]"),
+        (r"(?i)(cookie|set-cookie)(\s*:\s*)[^\r\n]+", r"\1\2[REDACTED:COOKIE]"),
+        (r"(?i)\b(postgres(?:ql)?|mysql)://[^\s:@/]+:[^@\s/]+@",
+         r"\1://[REDACTED:DATABASE_CREDENTIALS]@"),
+        (r"(?i)((?:database_url|password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)[^\s'\"]+",
+         r"\1[REDACTED:VALUE]"),
+        (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
+         "[REDACTED:JWT]"),
+    )
+    for pattern, replacement in substitutions:
+        text = re.sub(pattern, replacement, text)
+    return text
+
+
+def sanitized_value(value, key=""):
+    if re.search(r"password|passwd|token|secret|api[_-]?key|database_url", key, re.I):
+        return "[REDACTED:CONFIG]"
+    if isinstance(value, dict):
+        return {item_key: sanitized_value(item, str(item_key))
+                for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitized_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_text(value)
+    return value
+
+
+def execute_command(root, argv, timeout, log_path, environment=None):
+    exit_code = None
+    status = "failed"
+    output = ""
+    if not command_valid(argv):
+        output = "未配置有效参数数组\n"
+    else:
+        try:
+            run = subprocess.run(
+                argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=timeout, shell=False, env=environment,
+            )
+            exit_code = run.returncode
+            status = "passed" if exit_code == 0 else "failed"
+            output = run.stdout.decode("utf-8", errors="replace")
+        except subprocess.TimeoutExpired as error:
+            captured = error.stdout or b""
+            output = captured.decode("utf-8", errors="replace") + "\nSOP: command timed out\n"
+            status = "timeout"
+        except OSError as error:
+            output = str(error)
+    output = redact_text(output)
+    encoded = output.encode("utf-8")
+    if len(encoded) > MAX_LOG_BYTES:
+        encoded = encoded[:MAX_LOG_BYTES] + b"\nSOP: log truncated\n"
+        output = encoded.decode("utf-8", errors="replace")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(output, encoding="utf-8")
+    return {"status": status, "exit_code": exit_code,
+            "log": log_path.relative_to(root).as_posix(),
+            "log_sha256": sha(log_path)}
 
 
 def git_run(root, arguments, check=False):
@@ -135,6 +206,27 @@ def task_issues(root, stage):
         return [".sop/tasks.json 必须至少包含一项任务"]
     issues = []
     seen = set()
+    task_ids = {task.get("id") for task in tasks if isinstance(task, dict)}
+    schema = board.get("schema_version")
+    release = board.get("release", {}) if schema == 2 else {}
+    if schema not in (1, 2):
+        issues.append(".sop/tasks.json schema_version 必须为 1 或 2")
+    if schema == 2:
+        if not isinstance(release, dict) or not isinstance(release.get("id"), str) or not release["id"].strip():
+            issues.append("tasks schema v2 缺少 release.id")
+        for field in ("required_task_ids", "required_ac_ids"):
+            values = release.get(field) if isinstance(release, dict) else None
+            if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values):
+                issues.append("tasks schema v2 的 release." + field + " 必须为字符串数组")
+        required_ids = set(release.get("required_task_ids", [])) if isinstance(release, dict) else set()
+        if stage == 4 and not required_ids:
+            issues.append("L4 的 release.required_task_ids 不能为空")
+        if stage == 4 and not set(release.get("required_ac_ids", [])):
+            issues.append("L4 的 release.required_ac_ids 不能为空")
+        for missing in sorted(required_ids - task_ids):
+            issues.append("release 引用了不存在的任务: " + missing)
+    else:
+        required_ids = task_ids
     for index, task in enumerate(tasks, 1):
         prefix = f"任务 #{index}"
         if not isinstance(task, dict):
@@ -155,6 +247,32 @@ def task_issues(root, stage):
                 issues.append(prefix + " 缺少非空 " + field)
         if status == "done" and verification != "passed":
             issues.append(prefix + " 已标记 done 但 verification 不是 passed")
+        if (schema == 2 and stage == 4 and task_id not in required_ids
+                and status != "done"):
+            if task.get("delivery_disposition") != "backlog":
+                issues.append(prefix + " 不在本次 release 且未完成，必须标记 delivery_disposition=backlog")
+            for field in ("defer_reason", "owner", "next_action"):
+                if not isinstance(task.get(field), str) or not task[field].strip():
+                    issues.append(prefix + " backlog 缺少 " + field)
+    return issues
+
+
+def delivery_task_issues(root, stage):
+    """Delivery readiness is stricter than the structural checks used by sync."""
+    if stage < 4:
+        return []
+    board = read_json(root / ".sop/tasks.json")
+    tasks = board.get("tasks", [])
+    if board.get("schema_version") == 2:
+        required_ids = set(board.get("release", {}).get("required_task_ids", []))
+    else:
+        required_ids = {task.get("id") for task in tasks if isinstance(task, dict)}
+    issues = []
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("id") not in required_ids:
+            continue
+        if task.get("status") != "done" or task.get("verification") != "passed":
+            issues.append(f"任务 {task.get('id')} 属于本次交付范围，L4 要求 status=done 且 verification=passed")
     return issues
 
 
@@ -205,24 +323,122 @@ def audit_issues(root, config, stage):
                     issues.append(prefix + f" {field} 路径不存在: {declared}")
         if task.get("status") == "done" and task.get("verification") != "passed":
             issues.append(prefix + " done 必须对应 verification=passed")
+    if stage == 4:
+        if board.get("schema_version") == 2:
+            release = board.get("release", {})
+            required_tasks = set(release.get("required_task_ids", []))
+            required_acs = set(release.get("required_ac_ids", []))
+            covered = {ac_id for task in tasks if isinstance(task, dict)
+                       and task.get("id") in required_tasks
+                       for ac_id in task.get("ac_ids", [])}
+            for ac_id in sorted(required_acs - ac_ids):
+                issues.append("audit: 本次交付 AC 不存在于 requirements: " + ac_id)
+            for ac_id in sorted(required_acs - covered):
+                issues.append("audit: 本次交付 AC 未被 required task 覆盖: " + ac_id)
+    issues.extend(platform_issues(root, config, stage))
+    issues.extend(environment_issues(root, config, stage))
+    return issues
+
+
+def platform_issues(root, config, stage):
     platform = config.get("platform", {})
-    if isinstance(platform, dict) and platform.get("required"):
-        record_path = root / ".sop/platform-verification.json"
-        if not record_path.is_file():
-            issues.append("audit: platform.required=true 但缺少 .sop/platform-verification.json")
+    if not isinstance(platform, dict) or not platform.get("required"):
+        return []
+    record_path = root / ".sop/platform-verification.json"
+    if not record_path.is_file():
+        return ["audit: platform.required=true 但缺少 .sop/platform-verification.json"]
+    try:
+        record = read_json(record_path)
+    except (OSError, ValueError, TypeError):
+        return ["audit: 平台验证记录格式错误"]
+    if stage < 4 and (record.get("schema_version") == 1 or
+                      (record.get("compile") == "passed" and record.get("smoke") == "passed")):
+        issues = []
+        for field in ("platform", "tool", "tool_version", "source_root"):
+            if not isinstance(record.get(field), str) or not record[field].strip():
+                issues.append("audit: 平台验证记录缺少 " + field)
+        if record.get("compile") != "passed":
+            issues.append("audit: 真实平台编译尚未 passed")
+        if record.get("smoke") != "passed":
+            issues.append("audit: 真实平台冒烟尚未 passed")
+        return issues
+    if record.get("schema_version") != 2 or record.get("attested_by") != "sop.py":
+        return ["audit: L4 平台结果必须由 attest-platform 生成机器凭据，手工 passed 无效"]
+    issues = []
+    for field in ("platform", "tool", "tool_version", "source_root", "environment", "attested_at"):
+        if not isinstance(record.get(field), str) or not record[field].strip():
+            issues.append("audit: 平台凭据缺少 " + field)
+    source = record.get("source", {})
+    if source.get("sha256") != fingerprint(root):
+        issues.append("audit: 平台凭据对应的源码已变化")
+    commit = source.get("git_commit")
+    if not isinstance(commit, str) or git_run(
+            root, ["merge-base", "--is-ancestor", commit, "HEAD"]).returncode != 0:
+        issues.append("audit: 平台凭据绑定的 Git commit 不在当前历史中")
+    else:
+        tree = git_run(root, ["rev-parse", commit + "^{tree}"])
+        if tree.returncode != 0 or source.get("git_tree") != tree.stdout.strip():
+            issues.append("audit: 平台凭据的 Git tree 无法核验")
+    checks = record.get("checks", {})
+    for name in ("compile", "smoke"):
+        check = checks.get(name, {}) if isinstance(checks, dict) else {}
+        if check.get("status") != "passed":
+            issues.append("audit: 真实平台" + name + "尚未 passed")
+            continue
+        evidence = check.get("evidence", {})
+        try:
+            path = relative_path(root, evidence.get("path", ""))
+        except SopError:
+            issues.append("audit: 平台" + name + "证据路径无效")
+            continue
+        if not path.is_file() or sha(path) != evidence.get("sha256"):
+            issues.append("audit: 平台" + name + "证据缺失或已变化")
+    return issues
+
+
+def environment_issues(root, config, stage):
+    settings = config.get("environments", {})
+    required = config.get("stack") == "full-stack" or (
+        isinstance(settings, dict) and settings.get("required"))
+    if stage < 4 or not required:
+        return []
+    path = root / ".sop/environment-verification.json"
+    if not path.is_file():
+        return ["audit: 全栈 L4 缺少分环境验证记录 .sop/environment-verification.json"]
+    try:
+        record = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return ["audit: environment-verification.json 格式错误"]
+    delivery = settings.get("delivery") if isinstance(settings, dict) else None
+    delivery = delivery or record.get("delivery_environment")
+    if not isinstance(delivery, str) or not delivery:
+        return ["audit: 未声明本次交付环境"]
+    if record.get("delivery_environment") != delivery:
+        return ["audit: 环境记录与项目声明的交付环境不一致"]
+    environments = record.get("environments", {})
+    checks = environments.get(delivery) if isinstance(environments, dict) else None
+    if not isinstance(checks, dict) or not checks:
+        return ["audit: 交付环境没有检查项: " + delivery]
+    required_checks = settings.get("required_checks", []) if isinstance(settings, dict) else []
+    names = required_checks or list(checks)
+    issues = []
+    for name in names:
+        check = checks.get(name, {}) if isinstance(checks, dict) else {}
+        status = check.get("status")
+        if status not in ENVIRONMENT_STATUSES:
+            issues.append(f"audit: {delivery}/{name} 状态无效")
+        elif status != "passed":
+            blocker = check.get("blocker", "")
+            issues.append(f"audit: {delivery}/{name} 未通过: {status}" +
+                          ((" / " + blocker) if blocker else ""))
         else:
-            try:
-                record = read_json(record_path)
-            except (OSError, ValueError, TypeError):
-                issues.append("audit: 平台验证记录格式错误")
+            evidence = check.get("evidence")
+            if not isinstance(evidence, list) or not evidence:
+                issues.append(f"audit: {delivery}/{name} passed 但缺少证据路径")
             else:
-                for field in ("platform", "tool", "tool_version", "source_root"):
-                    if not isinstance(record.get(field), str) or not record[field].strip():
-                        issues.append("audit: 平台验证记录缺少 " + field)
-                if record.get("compile") != "passed":
-                    issues.append("audit: 真实平台编译尚未 passed")
-                if record.get("smoke") != "passed":
-                    issues.append("audit: 真实平台冒烟尚未 passed")
+                for value in evidence:
+                    if not declared_path_exists(root, value):
+                        issues.append(f"audit: {delivery}/{name} 证据不存在: {value}")
     return issues
 
 
@@ -282,6 +498,22 @@ def load_project(root):
     platform = config.get("platform", {"required": False})
     if not isinstance(platform, dict) or type(platform.get("required", False)) is not bool:
         raise SopError("platform.required 必须为布尔值")
+    lifecycle = config.get("test_lifecycle", {})
+    if not isinstance(lifecycle, dict):
+        raise SopError("test_lifecycle 必须为对象")
+    for name in ("setup", "cleanup"):
+        command = lifecycle.get(name, [])
+        if command and not command_valid(command):
+            raise SopError("test_lifecycle." + name + " 必须是参数数组")
+    environments = config.get("environments", {})
+    if not isinstance(environments, dict) or type(environments.get("required", False)) is not bool:
+        raise SopError("environments.required 必须为布尔值")
+    doctor_checks = config.get("doctor_checks", {})
+    if not isinstance(doctor_checks, dict):
+        raise SopError("doctor_checks 必须为对象")
+    for name, command in doctor_checks.items():
+        if not isinstance(name, str) or not name or not command_valid(command):
+            raise SopError("doctor_checks 的名称和命令必须有效")
     timeout = config.get("timeout_seconds")
     if type(timeout) is not int or not 1 <= timeout <= 3600:
         raise SopError("timeout_seconds 必须为 1–3600 整数")
@@ -337,7 +569,15 @@ def init_project(args):
               "name": args.name or root.name, "profile": args.profile,
               "risk": args.risk, "stack": args.stack, "modules": args.module,
               "timeout_seconds": 300, "commands": {},
-              "platform": {"required": False, "name": ""}}
+              "platform": {"required": False, "name": ""},
+              "environments": {
+                  "required": args.stack == "full-stack",
+                  "delivery": "local-dev" if args.stack == "full-stack" else "",
+                  "required_checks": (["database_connectivity", "database_migration", "api_smoke"]
+                                      if args.stack == "full-stack" else []),
+              },
+              "test_lifecycle": {"setup": [], "cleanup": []}}
+    config["doctor_checks"] = {}
     spec = requirements(config)
     config["commands"] = {key: [] for key in spec["commands"]}
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -370,13 +610,16 @@ def init_project(args):
         shutil.copy2(PACKAGE / "templates/tasks.json", stage / "tasks.json")
         shutil.copy2(PACKAGE / "templates/platform-verification.json",
                      stage / "platform-verification.json")
+        shutil.copy2(PACKAGE / "templates/environment-verification.json",
+                     stage / "environment-verification.json")
+        shutil.copy2(PACKAGE / "templates/checkpoints.json", stage / "checkpoints.json")
         (stage / "docs").mkdir()
         for name in spec["documents"] + ["handover"]:
             shutil.copy2(PACKAGE / "templates" / (name + ".md"),
                          stage / "docs" / (name + ".md"))
         shutil.copytree(stage, root / ".sop")
         (root / ".sop/.gitignore").write_text(
-            "git-baseline.json\nsync.json\nevidence/\nhandover/\n",
+            "/git-baseline.json\n/sync.json\n/checkpoints.json\n/evidence/\n/handover/\n",
             encoding="utf-8",
         )
         # Exclusive create protects existing agent files even if a concurrent writer appears.
@@ -467,6 +710,10 @@ def inspection(root, config, stage):
     if not isinstance(state, dict) or not isinstance(state.get("reviews"), dict):
         raise SopError("state.json 的 reviews 必须为对象")
     blockers.extend(task_issues(root, stage))
+    if stage == 4:
+        blockers.extend(delivery_task_issues(root, stage))
+        blockers.extend(audit_issues(root, config, stage))
+        blockers.extend(checkpoint_issues(root, stage))
     blockers.extend(sync_issues(root, config, stage))
     for name in spec["reviews"]:
         if REVIEW_STAGE[name] <= stage:
@@ -476,9 +723,11 @@ def inspection(root, config, stage):
     if stage == 4:
         report_path = root / ".sop/evidence/latest.json"
         report = read_json(report_path) if report_path.is_file() else {}
+        config_fresh = (report.get("config_sha256") == json_digest(config)
+                        if "config_sha256" in report else report.get("config") == config)
         fresh = (report.get("source_unchanged") is True
                  and report.get("source_sha256") == fingerprint(root)
-                 and report.get("config") == config)
+                 and config_fresh)
         if not fresh:
             blockers.append("自动检查未运行或已过期：运行 verify")
         results = report.get("results", {})
@@ -495,6 +744,44 @@ def inspection(root, config, stage):
                 if not log.is_file() or sha(log) != result.get("log_sha256"):
                     blockers.append("门禁日志缺失或变化: " + name)
     return blockers
+
+
+def checkpoint_issues(root, stage):
+    if stage < 4:
+        return []
+    task_path = root / ".sop/tasks.json"
+    if not task_path.is_file():
+        return []
+    board = read_json(task_path)
+    if board.get("schema_version") != 2:
+        return []
+    required = set(board.get("release", {}).get("required_task_ids", []))
+    path = root / ".sop/checkpoints.json"
+    if not path.is_file():
+        return ["L4 缺少 Git checkpoint 记录"]
+    try:
+        record = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return ["Git checkpoint 记录格式错误"]
+    tasks = record.get("tasks", {}) if isinstance(record, dict) else {}
+    issues = []
+    status = git_run(root, ["status", "--porcelain", "--untracked-files=all"])
+    if status.returncode != 0 or status.stdout.strip():
+        issues.append("L4 Git 工作区不干净；最终 checkpoint 后仍有未提交变化")
+    head = git_run(root, ["rev-parse", "HEAD"])
+    for task_id in sorted(required):
+        checkpoint = tasks.get(task_id, {}) if isinstance(tasks, dict) else {}
+        commit = checkpoint.get("commit")
+        if not isinstance(commit, str) or not commit:
+            issues.append("required task 缺少 Git checkpoint: " + task_id)
+            continue
+        if git_run(root, ["merge-base", "--is-ancestor", commit, "HEAD"]).returncode != 0:
+            issues.append("任务 checkpoint 不在当前 HEAD 历史中: " + task_id)
+    stages = record.get("stages", {}) if isinstance(record, dict) else {}
+    release = stages.get("L4", {}) if isinstance(stages, dict) else {}
+    if release.get("commit") != (head.stdout.strip() if head.returncode == 0 else None):
+        issues.append("L4 最终 Git checkpoint 缺失或不是当前 HEAD")
+    return issues
 
 
 def stage_number(value):
@@ -535,6 +822,188 @@ def baseline_project(args):
     write_json(root / ".sop/git-baseline.json", metadata)
     print("本地 Git 基线已建立: " + commit)
     return 0
+
+
+def git_snapshot(root, require_clean=True):
+    if local_git_issues(root):
+        raise SopError("必须先建立有效的本地 Git 基线")
+    status = git_run(root, ["status", "--porcelain", "--untracked-files=all"], check=True)
+    if require_clean and status.stdout.strip():
+        raise SopError("Git 工作区不干净；先审阅并提交本次变更，再登记 checkpoint")
+    head = git_run(root, ["rev-parse", "HEAD"], check=True).stdout.strip()
+    tree = git_run(root, ["rev-parse", "HEAD^{tree}"], check=True).stdout.strip()
+    return {"commit": head, "tree": tree}
+
+
+def checkpoint_project(args):
+    root = Path(args.project).resolve()
+    load_project(root)
+    snapshot = git_snapshot(root)
+    path = root / ".sop/checkpoints.json"
+    record = read_json(path) if path.is_file() else {
+        "schema_version": 1, "tasks": {}, "stages": {}}
+    if not isinstance(record, dict):
+        raise SopError("checkpoints.json 格式错误")
+    record.setdefault("tasks", {})
+    record.setdefault("stages", {})
+    item = {**snapshot, "created_at": now(),
+            "source_sha256": fingerprint(root),
+            "tasks_sha256": sha(root / ".sop/tasks.json")}
+    if args.task:
+        board = read_json(root / ".sop/tasks.json")
+        task = next((entry for entry in board.get("tasks", [])
+                     if isinstance(entry, dict) and entry.get("id") == args.task), None)
+        if not task:
+            raise SopError("任务不存在: " + args.task)
+        if task.get("status") != "done" or task.get("verification") != "passed":
+            raise SopError("任务尚未完成验证，不能登记 checkpoint: " + args.task)
+        message = git_run(root, ["log", "-1", "--pretty=%B"], check=True).stdout
+        if args.task not in message:
+            raise SopError("当前提交消息必须包含任务 ID: " + args.task)
+        record["tasks"][args.task] = item
+        label = "任务 " + args.task
+    else:
+        record["stages"][args.stage] = item
+        label = "阶段 " + args.stage
+    write_json(path, record)
+    print(label + " checkpoint 已登记: " + snapshot["commit"])
+    return 0
+
+
+def attest_platform_project(args):
+    root = Path(args.project).resolve()
+    config = load_project(root)
+    platform = config.get("platform", {})
+    if not platform.get("required"):
+        raise SopError("platform.required=false，无需生成平台凭据")
+    snapshot = git_snapshot(root)
+
+    def evidence(value):
+        path = relative_path(root, value)
+        if not path.is_file() or not path.stat().st_size:
+            raise SopError("平台证据不存在或为空: " + value)
+        return {"path": path.relative_to(root).as_posix(), "sha256": sha(path)}
+
+    record = {
+        "schema_version": 2,
+        "attested_by": "sop.py",
+        "attested_at": now(),
+        "environment": args.environment,
+        "platform": platform.get("name") or "unspecified",
+        "tool": args.tool,
+        "tool_version": args.tool_version,
+        "source_root": args.source_root,
+        "source": {"sha256": fingerprint(root),
+                   "git_commit": snapshot["commit"], "git_tree": snapshot["tree"]},
+        "checks": {
+            "compile": {"status": "passed", "evidence": evidence(args.compile_evidence)},
+            "smoke": {"status": "passed", "evidence": evidence(args.smoke_evidence)},
+        },
+    }
+    write_json(root / ".sop/platform-verification.json", record)
+    print("平台凭据已生成并绑定 Git commit: " + snapshot["commit"])
+    return 0
+
+
+def doctor_project(args):
+    root = Path(args.project).resolve()
+    config = load_project(root)
+    checks = []
+
+    def add(name, status, detail):
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    git_issues = local_git_issues(root)
+    add("git_baseline", "failed" if git_issues else "passed",
+        "；".join(git_issues) if git_issues else "local Git baseline ready")
+    tracked = git_run(root, ["ls-files"])
+    tracked_secret_files = []
+    for line in tracked.stdout.splitlines():
+        name = Path(line).name
+        if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
+            tracked_secret_files.append(line)
+    add("tracked_secrets", "failed" if tracked_secret_files else "passed",
+        ("敏感环境文件被 Git 跟踪: " + ", ".join(tracked_secret_files))
+        if tracked_secret_files else "no tracked secret environment file")
+    sample_secrets = []
+    for sample in root.rglob(".env.example"):
+        if any(part in EXCLUDED for part in sample.relative_to(root).parts):
+            continue
+        for line in sample.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            url_match = re.search(
+                r"(?i)\b(?:postgres(?:ql)?|mysql)://[^\s:@/]+:([^@\s/]+)@", line)
+            if url_match:
+                password = url_match.group(1)
+                if not re.search(r"change|example|placeholder|your[_-]|<.+>|\*{3,}", password, re.I):
+                    key = line.split("=", 1)[0].strip() or "DATABASE_URL"
+                    sample_secrets.append(sample.relative_to(root).as_posix() + ":" + key)
+                continue
+            match = re.match(r"\s*([A-Za-z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|API_KEY)[A-Za-z0-9_]*)\s*=\s*(.+)",
+                             line, re.I)
+            if not match:
+                continue
+            value = match.group(2).strip().strip("'\"")
+            if value and not re.search(r"change|example|placeholder|your[_-]|<.+>|\*{3,}", value, re.I):
+                sample_secrets.append(sample.relative_to(root).as_posix() + ":" + match.group(1))
+    add("example_credentials", "failed" if sample_secrets else "passed",
+        ("示例环境文件疑似包含明文凭证字段: " + ", ".join(sample_secrets))
+        if sample_secrets else "no plaintext credential-shaped sample value")
+    reserved = []
+    scan_root = root
+    project_config = root / "project.config.json"
+    if args.profile == "wechat-fullstack" and project_config.is_file():
+        try:
+            project_data = read_json(project_config)
+            scan_root = (root / project_data.get("miniprogramRoot", "")).resolve()
+            if root not in scan_root.parents and scan_root != root:
+                raise SopError("miniprogramRoot 逃逸项目目录")
+        except (OSError, ValueError, TypeError):
+            scan_root = root
+    if scan_root.is_dir():
+        for directory, dirs, _files in os.walk(scan_root):
+            for name in list(dirs):
+                if re.fullmatch(r"__.+__", name):
+                    reserved.append((Path(directory) / name).relative_to(root).as_posix())
+            dirs[:] = [name for name in dirs if name not in EXCLUDED]
+    add("reserved_directories", "failed" if reserved else "passed",
+        ("目标平台保留目录: " + ", ".join(reserved)) if reserved else "none")
+    required_commands = requirements(config)["commands"]
+    missing = [name for name in required_commands if not command_valid(config["commands"].get(name))]
+    add("quality_commands", "failed" if missing else "passed",
+        ("未配置: " + ", ".join(missing)) if missing else "all configured")
+    if args.profile == "wechat-fullstack":
+        add("wechat_project", "passed" if project_config.is_file() else "failed",
+            "project.config.json present" if project_config.is_file() else "缺少 project.config.json")
+        environment_settings = config.get("environments", {})
+        isolated = (config.get("stack") == "full-stack"
+                    and environment_settings.get("required")
+                    and bool(environment_settings.get("delivery")))
+        add("environment_matrix", "passed" if isolated else "failed",
+            "full-stack delivery environment declared" if isolated
+            else "未启用 full-stack 分环境验证")
+        probes = config.get("doctor_checks", {})
+        add("project_probes", "passed" if probes else "failed",
+            "configured: " + ", ".join(sorted(probes)) if probes
+            else "未配置数据库/API 等项目只读探针")
+    probe_run_id = "doctor-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    probe_root = root / ".sop/evidence" / probe_run_id
+    probe_environment = os.environ.copy()
+    probe_environment["SOP_RUN_ID"] = probe_run_id
+    for name, command in config.get("doctor_checks", {}).items():
+        result = execute_command(root, command, config["timeout_seconds"],
+                                 probe_root / (name + ".log"), probe_environment)
+        add("probe:" + name, "passed" if result["status"] == "passed" else "failed",
+            result["status"] + " / " + result["log"])
+    result = {"profile": args.profile, "ready": all(c["status"] == "passed" for c in checks),
+              "checks": checks,
+              "meaning": "本地前置诊断；不代替目标平台运行、数据库迁移或业务验收"}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("doctor " + ("通过" if result["ready"] else "发现阻塞"))
+        for check in checks:
+            print(f"- {check['status']}: {check['name']} / {check['detail']}")
+    return 0 if result["ready"] else 1
 
 
 def sync_project(args):
@@ -590,7 +1059,8 @@ def audit_project(args):
     config = load_project(root)
     target = args.stage or read_json(root / ".sop/state.json").get("target_stage")
     stage = stage_number(target)
-    issues = task_issues(root, stage) + audit_issues(root, config, stage)
+    issues = (task_issues(root, stage) + delivery_task_issues(root, stage)
+              + audit_issues(root, config, stage))
     result = {"stage": target, "ready": not issues, "issues": issues,
               "meaning": "语义一致性检查，不代替测试或人工验收"}
     if args.json:
@@ -610,39 +1080,53 @@ def verify_project(args):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     evidence = root / ".sop/evidence" / run_id
     evidence.mkdir(parents=True)
+    environment = os.environ.copy()
+    environment["SOP_RUN_ID"] = run_id
+    lifecycle_config = config.get("test_lifecycle", {})
+    lifecycle = {}
+    setup = lifecycle_config.get("setup", [])
+    if setup:
+        print("执行 test setup: " + json.dumps(sanitized_value(setup), ensure_ascii=False), flush=True)
+        lifecycle["setup"] = execute_command(
+            root, setup, config["timeout_seconds"], evidence / "setup.log", environment)
+    else:
+        lifecycle["setup"] = {"status": "not_configured", "exit_code": None}
     results = {}
-    for name in spec["commands"]:
-        argv = config["commands"].get(name)
-        path = evidence / (name + ".log")
-        exit_code = None
-        status = "failed"
-        if not command_valid(argv):
-            path.write_text("未配置有效参数数组\n", encoding="utf-8")
+    try:
+        for name in spec["commands"]:
+            argv = config["commands"].get(name)
+            path = evidence / (name + ".log")
+            if lifecycle["setup"]["status"] not in ("passed", "not_configured"):
+                path.write_text("SOP: skipped because test setup failed\n", encoding="utf-8")
+                results[name] = {"status": "skipped", "exit_code": None,
+                                 "log": path.relative_to(root).as_posix(),
+                                 "log_sha256": sha(path)}
+                continue
+            print("执行 " + name + ": " +
+                  json.dumps(sanitized_value(argv), ensure_ascii=False), flush=True)
+            results[name] = execute_command(
+                root, argv, config["timeout_seconds"], path, environment)
+    finally:
+        cleanup = lifecycle_config.get("cleanup", [])
+        if cleanup:
+            print("执行 test cleanup: " +
+                  json.dumps(sanitized_value(cleanup), ensure_ascii=False), flush=True)
+            lifecycle["cleanup"] = execute_command(
+                root, cleanup, config["timeout_seconds"], evidence / "cleanup.log", environment)
         else:
-            print("执行 " + name + ": " + json.dumps(argv, ensure_ascii=False), flush=True)
-            with path.open("wb") as stream:
-                try:
-                    run = subprocess.run(argv, cwd=root, stdout=stream,
-                                         stderr=subprocess.STDOUT,
-                                         timeout=config["timeout_seconds"],
-                                         shell=False)
-                    exit_code = run.returncode
-                    status = "passed" if exit_code == 0 else "failed"
-                except subprocess.TimeoutExpired:
-                    stream.write(b"\nSOP: command timed out\n")
-                    status = "timeout"
-                except OSError as error:
-                    stream.write(str(error).encode("utf-8"))
-        results[name] = {"status": status, "exit_code": exit_code,
-                         "log": path.relative_to(root).as_posix(),
-                         "log_sha256": sha(path)}
+            lifecycle["cleanup"] = {"status": "not_configured", "exit_code": None}
     after = fingerprint(root)
     stable = before == after and config == load_project(root)
-    report = {"schema_version": 1, "generated_at": now(), "config": config,
-              "source_sha256": before, "source_unchanged": stable, "results": results}
+    report = {"schema_version": 2, "run_id": run_id, "generated_at": now(),
+              "config": sanitized_value(config), "config_sha256": json_digest(config),
+              "source_sha256": before, "source_unchanged": stable,
+              "lifecycle": lifecycle, "results": results}
     write_json(evidence / "report.json", report)
     write_json(root / ".sop/evidence/latest.json", report)
-    passed = stable and all(r["status"] == "passed" for r in results.values())
+    lifecycle_passed = all(item["status"] in ("passed", "not_configured")
+                           for item in lifecycle.values())
+    passed = stable and lifecycle_passed and all(
+        r["status"] == "passed" for r in results.values())
     print("自动检查通过；人工复核仍需 check" if passed else "自动检查失败或输入在执行时变化，查看 .sop/evidence/")
     return 0 if passed else 1
 
@@ -697,6 +1181,26 @@ def main(argv=None):
         if name == "sync":
             command.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
         command.set_defaults(func=function)
+    checkpoint = sub.add_parser("checkpoint", help="登记已提交且可恢复的任务或阶段检查点")
+    checkpoint.add_argument("--project", default=".")
+    target = checkpoint.add_mutually_exclusive_group(required=True)
+    target.add_argument("--task")
+    target.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
+    checkpoint.set_defaults(func=checkpoint_project)
+    attest = sub.add_parser("attest-platform", help="将真实平台证据绑定到当前 Git 提交")
+    attest.add_argument("--project", default=".")
+    attest.add_argument("--environment", required=True)
+    attest.add_argument("--tool", required=True)
+    attest.add_argument("--tool-version", required=True)
+    attest.add_argument("--source-root", required=True)
+    attest.add_argument("--compile-evidence", required=True)
+    attest.add_argument("--smoke-evidence", required=True)
+    attest.set_defaults(func=attest_platform_project)
+    doctor = sub.add_parser("doctor", help="执行只读环境前置诊断")
+    doctor.add_argument("--project", default=".")
+    doctor.add_argument("--profile", choices=["default", "wechat-fullstack"], default="default")
+    doctor.add_argument("--json", action="store_true")
+    doctor.set_defaults(func=doctor_project)
     args = parser.parse_args(argv)
     try:
         return args.func(args)

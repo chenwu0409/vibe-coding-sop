@@ -1,11 +1,15 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "attested_by": "",
+  "attested_at": "",
+  "environment": "",
   "platform": "",
   "tool": "",
   "tool_version": "",
   "source_root": "",
-  "compile": "not_run",
-  "smoke": "not_run",
-  "evidence": [],
-  "blocker": ""
+  "source": {},
+  "checks": {
+    "compile": {"status": "not_run", "evidence": {}},
+    "smoke": {"status": "not_run", "evidence": {}}
+  }
 }

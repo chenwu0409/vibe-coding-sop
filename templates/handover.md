@@ -18,4 +18,4 @@ TODO: 当前源码版本/指纹、环境、实际通过/失败的命令和日志
 TODO: Git 基线提交和本次变更提交；失败触发、恢复步骤与数据限制；阻塞/未验证项、下一步责任人和完成标准。没有远端时说明本地仓库位置和备份限制。
 
 ## 交付门核对
-TODO: state.json.target_stage 是否为 L4；风险档位及适用复核；平台 schema/源码边界/真实编译或 ENV 阻塞；Git 基线或命名快照；接手者已复跑的命令和必须人工复跑的步骤。逐项写已验证、未验证、阻塞和责任人。
+TODO: state.json.target_stage 是否为 L4；release required task/AC 是否全部闭合；风险档位及适用复核；verify run ID 与 cleanup；分环境状态；平台 attest 或 ENV 阻塞；每个 required task 和当前 HEAD 的 Git checkpoint；接手者已复跑的命令和必须人工复跑的步骤。逐项写已验证、未验证、阻塞和责任人。

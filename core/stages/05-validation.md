@@ -10,7 +10,7 @@
 
 AAA：Arrange 准备固定数据/时间/外部响应，Act 调用公开行为，Assert 验证业务结果与不应发生的副作用。纯逻辑用单元测试，数据/协议边界用集成测试，关键用户旅程用端到端或人工真实操作。比例服从风险，不强制 60/30/10。
 
-Full-stack 项目必须明确四类证据：单元行为、API 契约、真实数据库集成、跨客户端端到端。客户端和后端各自的 Mock/单测不能替代真实 API 或真实数据库；数据库测试必须使用隔离的测试库或临时数据库，并记录初始化和重置方式。
+Full-stack 项目必须明确四类证据：单元行为、API 契约、真实数据库集成、跨客户端端到端。客户端和后端各自的 Mock/单测不能替代真实 API 或真实数据库；数据库测试必须使用隔离的测试库或临时数据库。`verify` 注入的 `SOP_RUN_ID` 是测试数据生命周期标识，setup/测试/cleanup 使用同一值；cleanup 只删除本次 run 的数据，不能用时间范围或“最近记录”代替。
 
 ## 需求到执行的映射
 
@@ -30,17 +30,18 @@ validation 中维护 AC → TC → 测试文件::函数/脚本步骤 → 命令/
 3. 保存原始日志/框架报告。框架支持时输出 JUnit XML 供 CI 解析；人读摘要直接用 validation，Allure 仅在需要时启用。
 4. 记录环境、源码版本/指纹、命令、用例数（通过/失败/跳过）、覆盖率测量范围。没有测量写“未测”，不能填估计值。
 5. 按下表对失败分类，修复后关联旧/新日志。最终用户验收检查真实场景，不能只看 CI 绿灯。
-6. 更新 validation 后先运行 `python .sop/runtime/sop.py verify`，再执行适用的目标平台编译/打包/导入或真实 UI 走查，然后运行 `python .sop/runtime/sop.py audit --stage L4`，最后运行 `python .sop/runtime/sop.py check --stage L4`。最终 check 的输出必须纳入交付证据；不能用更早一次 check 代替。
+6. 更新 validation 后运行 `verify`，审阅 run ID、脱敏日志和 cleanup；再执行目标平台编译/冒烟并运行 `attest-platform`。全栈项目更新交付环境逐项结果。随后运行 `audit --stage L4` 和 `sync`，提交治理记录、登记 `checkpoint --stage L4`，最后运行 `check --stage L4`。最终 check 的输出必须纳入交付证据；不能用更早一次 check 代替。
 
 7. 每条 AC 的验证结论先写入 `.sop/tasks.json` 对应任务，再同步 `plan.md`、`development.md`、`validation.md` 和风险/交接材料；运行 `python .sop/runtime/sop.py sync` 后才能继续收口。测试通过但任务清单、验证报告或未验证项未同步时，视为未完成。
 
 ## 生产级交付前清单
 
 - `state.json.target_stage` 已推进到 L4；requirements/design/acceptance 的 scope 与当前材料/源码一致。
-- `.sop/tasks.json` 中每条完成任务都有 AC、代码、测试、证据和 `verification=passed`；任务状态与 plan/validation 一致，且最新 `sync` 未过期。
+- `.sop/tasks.json` 的 required task 全部 done/passed，required AC 均被覆盖；任务状态与 plan/validation 一致，最新 `sync` 未过期，每项 required task 和当前 HEAD 均有 Git checkpoint。
 - plan/development/validation 中的任务状态、测试数量、构建结果、失败修复和未验证项与当前事实一致，没有遗留的过时结论。
 - 敏感数据、权限、外部副作用、不可逆迁移和真实发布已完成风险分档；适用的 high 门禁和发布复核没有被 normal 档绕过。
-- 目标平台配置已做字段/schema 检查，源码边界已扫描，真实平台编译/导入/冒烟有证据；不可用时明确 ENV 阻塞和责任人。
+- 目标平台配置已做字段/schema 检查，源码边界已扫描，真实平台编译/导入/冒烟凭据由 `attest-platform` 绑定证据哈希与 Git 历史；不可用时明确 ENV 阻塞和责任人。
+- 全栈项目的交付环境检查逐项 passed；test 通过没有覆盖 local-dev/staging/production 的失败或未运行。
 - 存在 Git 基线或命名快照，并能说明恢复步骤和数据限制。
 - `handover.md` 已填完，`handover` 快照中的 blockers、handover_complete 和 narrative 哈希已审阅。
 
@@ -49,7 +50,7 @@ validation 中维护 AC → TC → 测试文件::函数/脚本步骤 → 命令/
 当项目有目标平台/运行时编译器时，在自动 test/build 之后执行目标平台验证：
 
 1. 确认开发者工具、官方 CLI 或打包器读取的项目配置和源码根目录与 design.md 一致；检查测试、SOP、缓存和构建产物没有落入平台源码扫描范围。
-2. 执行真实平台编译/打包/导入检查，记录工具版本、命令或人工步骤、输出和结果。平台构建脚本可作为 project.json 的 build 命令，但不能用 Node/Python 语法检查冒充平台编译。
+2. 执行真实平台编译/打包/导入检查，保存工具版本、命令或人工步骤及原始输出；运行 `attest-platform` 生成绑定当前源码/Git 的记录。平台构建脚本可作为 project.json 的 build 命令，但不能用 Node/Python 语法检查冒充平台编译。
 3. 若平台工具、账号、设备或服务不可用，按 ENV 记录具体阻塞、替代验证和责任人；保留未验证状态，不把自动测试全绿写成完成。
 4. 若平台扫描规则导致编译失败，先修复项目边界，再增加最小回归检查，确保规则不会因缓存或 SOP 运行重新生成的目录而失效。
 

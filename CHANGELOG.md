@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 — 2026-10-18
+
+- `tasks.json` v2 增加 release scope；L4 强制本次任务全部 done/passed，且 required AC 被任务覆盖。
+- 增加分环境验证记录；测试环境通过不再能替代开发或交付环境通过。
+- 增加 `doctor --profile wechat-fullstack`，检查 Git、敏感文件、平台保留目录、质量命令、环境矩阵及项目只读探针。
+- `verify` 为每次执行注入 `SOP_RUN_ID`，无论成功失败都执行 cleanup，并记录生命周期证据。
+- `verify` 在持久化前脱敏 JWT、Bearer、Cookie、数据库 URL 和常见秘密字段；配置证据改用脱敏副本与独立哈希。
+- 增加 `attest-platform`，将真实编译/冒烟证据、工具版本、源码指纹和 Git 提交绑定；L4 拒绝手工填写的 passed。
+- 增加任务及 L4 `checkpoint`；新协议项目必须用当前 Git 历史中的检查点完成交付。
+
 ## 0.2.6 — 2026-10-18
 
 - 增加 `--stack full-stack` 预设，生成架构、API 契约、数据库迁移和环境文档。

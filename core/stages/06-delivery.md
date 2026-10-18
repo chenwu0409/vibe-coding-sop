@@ -11,7 +11,7 @@
 - 恢复：什么条件触发回退？恢复哪个已知可用版本/备份？数据迁移是否能逆转，不能时如何前向修复？
 - 凭证：只交接配置名称和取得方式，不把值写入文档、仓库和报告。
 
-生产级交付再加核对：`.sop/state.json.target_stage` 为 L4；`.sop/tasks.json` 与 plan/development/validation 状态一致，任务完成项都有测试与证据且 `verification=passed`；最新 `sync` 未过期；所有阶段文档与当前实现同步；敏感数据和外部副作用的风险档位经过重新确认；目标平台配置 schema、真实编译/冒烟和未验证状态有证据；存在可恢复 Git 基线；handover.md 已完成且接手者能按步骤复跑。任一项缺失时，交付类型只能写“部分完成/待验证”。
+生产级交付再加核对：`.sop/state.json.target_stage` 为 L4；本次 required task/AC 全部闭合；最新 `sync` 未过期；verify 的 run ID、cleanup 和脱敏证据有效；全栈交付环境逐项通过；目标平台凭据绑定真实证据与 Git 历史；每个 required task 及当前 HEAD 有 checkpoint；handover.md 已完成且接手者能复跑。任一项缺失时，交付类型只能写“部分完成/待验证”。
 
 Full-stack 交付再核对：客户端、API、业务服务和数据库的版本/启动命令可复现；API 契约与客户端调用一致；迁移能在空库执行并记录恢复边界；测试库与开发库隔离；真实端到端冒烟通过或明确标记 ENV 未验证。仅有前后端各自单测通过不能写“系统已完成”。
 

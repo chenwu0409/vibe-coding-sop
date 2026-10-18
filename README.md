@@ -20,6 +20,8 @@ python .sop/runtime/sop.py check
 
 ```sh
 python .sop/runtime/sop.py check --stage L0
+# 全栈/小程序先执行环境诊断，并配置项目自己的数据库/API只读探针
+python .sop/runtime/sop.py doctor --profile wechat-fullstack
 # L3/L4 任务语义与平台记录检查
 python .sop/runtime/sop.py audit --stage L3
 # 编辑 .sop/project.json 的 commands 后，显式执行：
@@ -30,7 +32,9 @@ python .sop/runtime/sop.py handover
 
 每次新任务或继续任务都先运行 `check`，把输出作为起始基线。需求、设计、计划、平台边界、配置、共享契约或源码变化后重新运行 check；若出现 scope 变化，受影响复核必须重新确认。交付时严格按 `verify` → 真实目标平台/界面检查 → `check --stage L4` 收口。
 
-每个任务和环节完成后必须同步：更新 `.sop/tasks.json` 的任务状态、AC/代码/测试/证据字段，同时更新受影响的 plan/development/validation/risk 文档，再运行 `python .sop/runtime/sop.py sync`。`check` 会校验同步指纹；源码、配置、任务清单或阶段文档发生变化而未重新同步时，检查失败。进入 L3/L4 时必须有任务清单；任务标记 `done` 必须有测试、证据且 `verification` 为 `passed`。同步不是人工审批，也不能替代真实平台验证。
+每个任务和环节完成后必须同步：更新 `.sop/tasks.json` 的任务状态、AC/代码/测试/证据字段，同时更新受影响的 plan/development/validation/risk 文档，再运行 `python .sop/runtime/sop.py sync`。v2 任务清单用 `release.required_task_ids` 和 `required_ac_ids` 定义本次交付范围；L4 要求这些任务全部 done/passed 且 AC 被覆盖。`check` 会校验同步指纹；源码、配置、任务清单或阶段文档发生变化而未重新同步时，检查失败。同步不是人工审批，也不能替代真实平台验证。
+
+提交已完成切片后运行 `checkpoint --task T-001`；最终治理记录提交后运行 `checkpoint --stage L4`。新协议的 L4 同时要求任务检查点和当前 HEAD 的最终检查点。工具不会执行无差别 `git add .`，提交前由 Agent 审阅暂存内容和秘密文件。
 
 进入 L3/L4 前另运行 `audit`：它检查 AC 是否存在、任务声明的代码/测试路径是否存在，以及启用目标平台时是否有完整的平台编译/冒烟记录。`audit` 是语义一致性检查，不代替测试或人工验收。
 
@@ -44,7 +48,7 @@ check 只读；verify 执行门禁并保存日志，绑定源码和命令配置�
 | M（默认） | 普通业务应用 | S + 技术设计、开发落点 | test、build | 需求、设计、验收 |
 | L | 跨模块、长周期单 Agent 项目 | M + 术语、任务、回归计划 | test、build、lint | 宪法、需求、设计、验收 |
 
-`--risk high` 对任意档追加 risk 文档、security 命令和发布/回滚复核；`--module` 可按需增加 glossary、wireframe、regression、research、development。中型全栈项目使用 `--stack full-stack`，会额外生成系统架构、API 契约、数据库迁移和环境矩阵文档；它不强制微服务，默认优先单体后端和一条真实跨层切片。所有档生成交接模板，但不要求启动时填写。每个项目必须有本地 Git，不要求远端服务器，但必须有命名基线提交。覆盖率与函数长度由项目自定，不用统一数字代替质量判断。需要真实平台验证时，在 `project.json` 设置 `platform.required=true`，并填写 `.sop/platform-verification.json`。
+`--risk high` 对任意档追加 risk 文档、security 命令和发布/回滚复核；`--module` 可按需增加 glossary、wireframe、regression、research、development。中型全栈项目使用 `--stack full-stack`，会额外生成系统架构、API 契约、数据库迁移和环境矩阵文档，并要求 `.sop/environment-verification.json` 中声明的交付环境通过。它不强制微服务，默认优先单体后端和一条真实跨层切片。所有档生成交接模板，但不要求启动时填写。每个项目必须有本地 Git，不要求远端服务器，但必须有命名基线提交。覆盖率与函数长度由项目自定，不用统一数字代替质量判断。需要真实平台验证时，在 `project.json` 设置 `platform.required=true`，保存真实编译/冒烟输出后运行 `attest-platform`；手改 JSON 为 passed 不能通过 L4。
 
 ```sh
 python sop.py init ./my-project --profile M --risk high --stack full-stack
@@ -89,6 +93,8 @@ your-project/
     ├── runtime/              # 可独立运行的版本快照
     ├── tasks.json            # 机器可读任务/AC/测试/验证状态
     ├── platform-verification.json # 真实平台编译/冒烟记录（按需启用）
+    ├── environment-verification.json # 按 test/dev/staging/prod 分开的结果
+    ├── checkpoints.json      # 本地 Git 任务/阶段检查点（本地忽略）
     ├── sync.json             # 最近一次状态同步指纹（本地忽略）
     ├── git-baseline.json     # 本地 Git 恢复基线（本地忽略）
     ├── evidence/             # verify 后生成
@@ -111,6 +117,6 @@ GitHub Actions 配置了 Windows/Linux、Python 3.10/3.14 测试矩阵。业务 
 
 ## 版本与来源
 
-当前为 [0.2.5 试用版](CHANGELOG.md)，优先在两个真实项目测量交付耗时、返工、缺陷和人工介入，再扩展自动升级。没有自动修改源码、内置安全扫描器或审批身份认证；具体边界见协议。旧项目需要显式迁移，不能只改版本号。
+当前为 [0.3.0 试用版](CHANGELOG.md)，优先在两个真实项目测量交付耗时、返工、缺陷和人工介入，再扩展自动升级。没有自动修改源码、内置安全扫描器或审批身份认证；具体边界见协议。旧项目需要显式迁移，不能只改版本号。
 
 从“一堂双三角”的 L0–L4 流程、质量门禁、测试验证和交接规范提炼。[来源与取舍表](docs/source-map.md) 逐项说明采用了什么、放在哪里、哪些规则未机械照搬。Obsidian 保存研究历史，本仓库维护可分发版本。未复制私人路径、服务器配置和未经核验的效果数字。沿用仓库既有 Apache-2.0 许可证。
