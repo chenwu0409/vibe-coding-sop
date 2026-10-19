@@ -190,6 +190,8 @@ def sync_fingerprint(root, config, spec, stage):
         "source": fingerprint(root),
         "config": config,
         "tasks": sha(root / ".sop/tasks.json") if (root / ".sop/tasks.json").is_file() else "MISSING",
+        "platform_flows": sha(root / ".sop/platform-flows.json")
+            if (root / ".sop/platform-flows.json").is_file() else "MISSING",
         # Hash every configured project document so an Agent cannot leave a later-stage
         # document stale while keeping target_stage at an earlier value.
         "documents": document_digest(root, spec["documents"]),
@@ -457,6 +459,7 @@ def platform_issues(root, config, stage):
             issues.append("audit: 真实平台编译尚未 passed")
         if record.get("smoke") != "passed":
             issues.append("audit: 真实平台冒烟尚未 passed")
+        issues.extend(platform_flow_issues(root, config, stage))
         return issues
     if record.get("schema_version") != 2 or record.get("attested_by") != "sop.py":
         return ["audit: L4 平台结果必须由 attest-platform 生成机器凭据，手工 passed 无效"]
@@ -489,6 +492,72 @@ def platform_issues(root, config, stage):
             continue
         if not path.is_file() or sha(path) != evidence.get("sha256"):
             issues.append("audit: 平台" + name + "证据缺失或已变化")
+    flow_attestation = record.get("platform_flows", {})
+    flow_path = root / ".sop/platform-flows.json"
+    if flow_attestation.get("path") != ".sop/platform-flows.json" or \
+            flow_attestation.get("sha256") != (sha(flow_path) if flow_path.is_file() else ""):
+        issues.append("audit: 平台凭据未绑定当前 platform-flows.json")
+    issues.extend(platform_flow_issues(root, config, stage))
+    return issues
+
+
+def platform_flow_issues(root, config, stage):
+    """Require an explicit page inventory and critical-flow evidence for platform apps."""
+    platform = config.get("platform", {})
+    if not isinstance(platform, dict) or not platform.get("required"):
+        return []
+    path = root / ".sop/platform-flows.json"
+    if not path.is_file():
+        return ["audit: platform.required=true 但缺少 .sop/platform-flows.json（页面清单和关键流程）"]
+    try:
+        record = read_json(path)
+    except (OSError, ValueError, TypeError):
+        return ["audit: .sop/platform-flows.json 格式错误"]
+    if record.get("schema_version") != 1:
+        return ["audit: platform-flows.json schema_version 必须为 1"]
+    pages = record.get("pages")
+    flows = record.get("flows")
+    if not isinstance(pages, list) or not pages:
+        return ["audit: platform-flows.json 必须有非空 pages 页面清单"]
+    if not isinstance(flows, list) or not flows:
+        return ["audit: platform-flows.json 必须有非空 flows 关键流程清单"]
+    issues = []
+    for index, page in enumerate(pages, 1):
+        if not isinstance(page, dict) or not page.get("path"):
+            issues.append(f"audit: 平台页面 #{index} 缺少 path")
+    for index, flow in enumerate(flows, 1):
+        prefix = f"audit: 平台流程 #{index}"
+        if not isinstance(flow, dict):
+            issues.append(prefix + " 格式错误")
+            continue
+        if not flow.get("id") or not flow.get("title") or not flow.get("entry"):
+            issues.append(prefix + " 必须有 id/title/entry")
+        required = flow.get("required", True)
+        if type(required) is not bool:
+            issues.append(prefix + " required 必须为布尔值")
+            required = True
+        if not required:
+            continue
+        status = flow.get("status")
+        if status not in ("passed", "failed", "blocked", "not_run", "unverified"):
+            issues.append(prefix + " status 无效")
+            continue
+        if status != "passed":
+            blocker = flow.get("blocker", {})
+            reason = blocker.get("reason") if isinstance(blocker, dict) else ""
+            owner = blocker.get("owner") if isinstance(blocker, dict) else ""
+            next_action = blocker.get("next_action") if isinstance(blocker, dict) else ""
+            issues.append(prefix + f" 未通过: {status}；必须登记 reason/owner/next_action"
+                          if not (reason and owner and next_action)
+                          else prefix + f" 未通过: {status} / {reason}")
+            continue
+        evidence = flow.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            issues.append(prefix + " passed 但缺少证据路径")
+            continue
+        for value in evidence:
+            if not evidence_path_exists(root, value):
+                issues.append(prefix + " 证据不存在或为空: " + str(value))
     return issues
 
 
@@ -706,6 +775,8 @@ def init_project(args):
         shutil.copy2(PACKAGE / "templates/tasks.json", stage / "tasks.json")
         shutil.copy2(PACKAGE / "templates/platform-verification.json",
                      stage / "platform-verification.json")
+        shutil.copy2(PACKAGE / "templates/platform-flows.json",
+                     stage / "platform-flows.json")
         shutil.copy2(PACKAGE / "templates/environment-verification.json",
                      stage / "environment-verification.json")
         shutil.copy2(PACKAGE / "templates/checkpoints.json", stage / "checkpoints.json")
@@ -1021,6 +1092,11 @@ def attest_platform_project(args):
         "tool": args.tool,
         "tool_version": args.tool_version,
         "source_root": args.source_root,
+        "platform_flows": {
+            "path": ".sop/platform-flows.json",
+            "sha256": sha(root / ".sop/platform-flows.json")
+                if (root / ".sop/platform-flows.json").is_file() else "",
+        },
         "source": {"sha256": fingerprint(root),
                    "git_commit": snapshot["commit"], "git_tree": snapshot["tree"]},
         "checks": {

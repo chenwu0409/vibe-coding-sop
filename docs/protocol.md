@@ -9,7 +9,7 @@
 - `modules`：可选 glossary/wireframe/regression/research/development 文档。
 - `commands`：门禁 ID 到命令参数数组的映射；不会经过隐式 shell。例如 `["python","-m","unittest","discover","-s","tests"]`。
 - `timeout_seconds`：每条命令 1–3600 秒，默认 300。
-- `platform`：可选对象；设置 `{"required": true, "name": "..."}` 后，L3/L4 的 `audit` 要求 `.sop/platform-verification.json` 记录真实平台编译和冒烟结果。
+- `platform`：可选对象；设置 `{"required": true, "name": "..."}` 后，L3/L4 的 `audit` 要求 `.sop/platform-verification.json` 记录真实平台编译和冒烟结果，并要求 `.sop/platform-flows.json` 登记页面清单和 required 关键用户流程。流程状态为 `passed` 时必须有真实平台证据；`blocked`/`unverified` 必须写原因、责任人和下一步，不能通过 L4。
 - `environments`：全栈项目声明是否必需、交付环境和该环境的必需检查；各环境结果保存在 `.sop/environment-verification.json`，不得用 test 结果代替 local-dev/staging/production。
 - `test_lifecycle.setup/cleanup`：可选参数数组。`verify` 为 setup、全部门禁和 cleanup 注入同一 `SOP_RUN_ID`；cleanup 在门禁失败或超时后仍会运行，cleanup 失败导致 verify 失败。
 - `doctor_checks`：项目自己的只读诊断探针，例如测试数据库连通性、迁移权限和 API health。参数数组不经过 shell；探针必须只读，不把迁移或数据修复伪装成诊断。
@@ -32,7 +32,7 @@ S 要求 test；M 加 build；L 加 lint；high 对任意档加 security。具�
 
 `.sop/tasks.json` 是任务状态的机器可读权威文件。v2 的 `release.required_task_ids` 和 `release.required_ac_ids` 是本次交付范围；每项任务至少包含 `id`、`status`、`ac_ids`、`implementation`、`tests`、`evidence` 和 `verification`。L3/L4 必须有至少一项任务；L4 中所有 required task 必须 `status=done`、`verification=passed`，required AC 必须真实存在并被 required task 覆盖。未来任务放在非 required backlog 中并记录延期理由，不得用 `in_progress` 掩盖本次缺口。v1 兼容读取，但没有显式 backlog 语义，L4 将所有任务视为本次范围。
 
-`audit` 是显式的语义一致性检查：它确认任务引用的 AC 在 requirements 中存在，implementation/tests 声明的路径在项目内存在，release AC 有任务覆盖；全栈项目核对交付环境的逐项状态；当 `platform.required=true` 时，L4 只接受 `attest-platform` 生成且证据哈希、源码指纹和 Git 历史仍有效的平台凭据。它不判断测试断言质量，也不替代真实用户验收。
+`audit` 是显式的语义一致性检查：它确认任务引用的 AC 在 requirements 中存在，implementation/tests 声明的路径在项目内存在，release AC 有任务覆盖；全栈项目核对交付环境的逐项状态；当 `platform.required=true` 时，L4 只接受 `attest-platform` 生成且证据哈希、源码指纹、流程清单哈希和 Git 历史仍有效的平台凭据。它不判断测试断言质量，也不替代真实用户验收。
 
 任务状态由 `task` 命令提供受控转换：`start` 将 planned/blocked 转为 in_progress/pending；`verify` 仅在 AC、代码、测试路径真实存在且 evidence 文件真实存在、非空时转为 in_progress/passed；`done` 只接受已经 passed 的任务；`block` 要求填写 `defer_reason`、`owner` 和 `next_action`，并转为 blocked/blocked。直接编辑 JSON 仍可被读取以兼容旧项目，但 `check`/`audit`/checkpoint 会拒绝不一致状态。
 

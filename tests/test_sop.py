@@ -209,7 +209,54 @@ class SopTests(unittest.TestCase):
                        "tool_version": "test", "source_root": "app",
                        "compile": "passed", "smoke": "passed"})
         sop.write_json(self.root / ".sop/platform-verification.json", record)
+        self.write_platform_flows()
         self.assertEqual(self.call("audit", "--project", self.root, "--stage", "L3"), 0)
+
+    def write_platform_flows(self, flow_status="passed", evidence=True):
+        path = self.root / ".sop/evidence/platform-flow.txt"
+        if evidence:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("FLOW-001 passed on target platform\n", encoding="utf-8")
+        sop.write_json(self.root / ".sop/platform-flows.json", {
+            "schema_version": 1,
+            "platform": "wechat-miniapp",
+            "source": ["app.json", "requirements.md"],
+            "pages": [{"id": "PAGE-001", "path": "pages/index/index",
+                        "required": True, "status": "inventoried"}],
+            "flows": [{"id": "FLOW-001", "title": "进入首页并完成核心操作",
+                       "entry": "pages/index/index", "required": True,
+                       "steps": ["打开页面", "执行核心操作", "确认结果"],
+                       "status": flow_status,
+                       "evidence": [".sop/evidence/platform-flow.txt"] if evidence else [],
+                       "blocker": {"reason": "", "owner": "", "next_action": ""}}]
+        })
+
+    def test_platform_flows_are_required_and_evidenced(self):
+        self.init("M")
+        self.fill_docs()
+        self.baseline()
+        config = self.config()
+        config["platform"] = {"required": True, "name": "wechat-miniapp"}
+        self.save_config(config)
+        self.assertTrue((self.root / ".sop/platform-flows.json").exists())
+        issues = sop.platform_flow_issues(self.root, config, 3)
+        self.assertTrue(any("platform-flows" in item for item in issues), issues)
+        self.write_platform_flows("not_run", evidence=False)
+        issues = sop.platform_flow_issues(self.root, config, 4)
+        self.assertTrue(any("未通过" in item for item in issues), issues)
+        self.write_platform_flows("passed")
+        self.assertEqual(sop.platform_flow_issues(self.root, config, 4), [])
+
+    def test_blocked_platform_flow_is_explicit_but_not_delivery_pass(self):
+        self.init("M")
+        self.fill_docs()
+        self.baseline()
+        config = self.config()
+        config["platform"] = {"required": True, "name": "wechat-miniapp"}
+        self.save_config(config)
+        self.write_platform_flows("blocked", evidence=False)
+        issues = sop.platform_flow_issues(self.root, config, 4)
+        self.assertTrue(any("blocked" in item or "未通过" in item for item in issues), issues)
 
     def test_done_task_requires_test_and_verification_sync(self):
         self.init("M")
@@ -352,6 +399,11 @@ class SopTests(unittest.TestCase):
         evidence = self.root / ".sop/evidence/wechat.txt"
         evidence.parent.mkdir(parents=True, exist_ok=True)
         evidence.write_text("compile and smoke passed", encoding="utf-8")
+        self.write_platform_flows()
+        subprocess.run(["git", "-C", str(self.root), "add", ".sop/platform-flows.json"],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-m",
+                        "test: record platform flow inventory"], check=True, capture_output=True)
         self.assertEqual(self.call(
             "attest-platform", "--project", self.root,
             "--environment", "local-dev", "--tool", "wechatide",

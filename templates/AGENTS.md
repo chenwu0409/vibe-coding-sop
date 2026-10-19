@@ -8,7 +8,7 @@
 2. 运行只读入口 `python .sop/runtime/sop.py guard` 定位缺失材料和下一步，并把输出视为本次任务的起始基线；需要机器可读结果时加 `--json`，需要单项诊断时再运行 `check`/`audit`。当前阶段由 state.json 或 --stage 选择；命令返回成功不等于业务已经验收。
 3. 确认项目有自己的本地 Git 仓库和命名基线；没有远端也必须运行 `python .sop/runtime/sop.py baseline`。不在未建立基线的工作区上开始需求实现。
 4. 根据下表读取执行手册。由 Agent 从现有信息起草实质内容，不把空模板交回用户代填；只追问会改变业务结果、共享契约、授权或高成本返工的未知项。
-5. 如果项目目标是小程序、浏览器、移动端、桌面端、插件、游戏引擎或其他有独立运行时/编译器的平台，先识别平台配置、实际源码根目录、扫描/打包规则和真实编译入口；M/L 写入 design.md，S 写入 plan.md，验证时执行真实平台编译/打包。无法使用平台工具时，明确记录 ENV/未验证和阻塞，不把 Node/Python 测试通过当作平台通过。
+5. 如果项目目标是小程序、浏览器、移动端、桌面端、插件、游戏引擎或其他有独立运行时/编译器的平台，先识别平台配置、实际源码根目录、扫描/打包规则和真实编译入口；M/L 写入 design.md，S 写入 plan.md，验证时执行真实平台编译/打包。同步生成 `.sop/platform-flows.json`：从路由/app 配置和需求建立页面清单，并只把本次交付的关键用户路径标为 required；逐条执行真实平台流程并登记状态、步骤和证据。微信小程序至少加载编译器、页面自动化，必要时加载调试/预览能力；技能已安装不等于流程已执行。无法使用平台工具时，明确记录 ENV/未验证、责任人和下一步，不把 Node/Python 测试通过当作平台通过。
    平台能力与边界见 `.sop/runtime/docs/platforms.md`；微信小程序、Android、iOS 分别按可用的官方工具、模拟器或远程环境验证，不能假定 Agent 自带平台模拟器。
 6. 如果 `.sop/project.json` 的 `stack` 为 `full-stack`，先读 `.sop/docs/architecture.md`、`.sop/docs/api-contract.md`、`.sop/docs/data-migrations.md` 和 `.sop/docs/environments.md`；运行 `doctor --profile wechat-fullstack`（微信项目）或 `doctor`，先处理 Git、秘密、保留目录和项目探针阻塞。第一条切片必须穿过真实客户端、API、业务服务和数据库。
 
@@ -43,6 +43,7 @@
 - 本次变更前列直接/间接影响和原行为基线；每个重要受影响路径有回归方法。
 - test/build 等命令以 project.json 为准，执行前审阅。数据库/外部副作用测试使用 `SOP_RUN_ID` 标记本次数据；通过 test_lifecycle cleanup 精确清理本次 run，失败或超时后也必须清理。运行 `verify` 后检查脱敏日志、测试数量、跳过项和 cleanup 结果。
 - 目标平台项目在 test/build 后执行平台编译/打包或人工导入检查；交付前核对源码根目录与平台扫描边界，特别检查保留目录、缓存和 SOP 生成物。未执行的平台检查必须列在 validation/handover 的未验证项中。
+- 目标平台项目除编译外必须执行页面关键流程。平台编译通过不能关闭页面覆盖门禁；`platform-flows.json` 中 required 流程没有真实证据时，只能报告部分完成/待验证。
 - 若 `project.json` 设置 `platform.required=true`，保存真实编译/冒烟证据并运行 `attest-platform`，由 CLI 生成 `.sop/platform-verification.json` 并绑定工具版本、证据哈希、源码指纹和 Git 提交。手工填写 passed 不能关闭 L4；微信小程序、Android、iOS 均适用。
 - 涉及健康/财务/身份/儿童/位置数据、权限、云同步、外部 API、通知/支付、批量删除、不可逆迁移或真实用户发布时，重新评估 risk；必要时切换 high 档，不因“本地存储”自动降级。
 - 交付前同步 plan/development/validation 的状态和真实数量，更新 `.sop/tasks.json`，运行 `sync`，推进 `state.json.target_stage` 到 L4；准备 Git 基线，并完成 handover.md。过时的“待开始/未实现”不能留在交付结论里。

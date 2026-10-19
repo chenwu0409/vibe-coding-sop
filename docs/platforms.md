@@ -20,12 +20,14 @@ iOS Simulator 依赖 macOS、Xcode 和模拟器运行时。Windows Agent 不能�
 
 ## 记录要求
 
-启用 `project.json` 的 `platform.required=true` 后，先保存真实编译和冒烟输出或截图，再运行：
+启用 `project.json` 的 `platform.required=true` 后，先从 `app.json`/项目路由/需求整理 `.sop/platform-flows.json`，登记页面清单和本次交付的关键用户流程。对小程序，至少覆盖首屏进入、核心新增/编辑/删除、页面跳转/返回、空态/错误态和主要手势；不要把所有组合都列成 required，按 AC 和风险选择关键流程。然后保存真实编译和冒烟输出或截图，再运行：
 
 ```sh
 python .sop/runtime/sop.py attest-platform --environment local-dev --tool wechatide --tool-version 2.x --source-root miniprogram --compile-evidence .sop/evidence/compile.txt --smoke-evidence .sop/evidence/smoke.txt
 ```
 
-该命令只接受项目内已有且非空的证据，将其哈希、工具版本、源码指纹和当前 Git commit/tree 写入 `.sop/platform-verification.json`。证据变化、源码变化或绑定提交不在当前 Git 历史中时，L4 失败。后续仅提交治理文件不会使源码证据过期，但源码变化会。直接手改 `compile/smoke=passed` 只兼容旧版 L3 迁移检查，不能通过 v2 的 L4。
+该命令只接受项目内已有且非空的证据，将其哈希、工具版本、源码指纹、流程清单哈希和当前 Git commit/tree 写入 `.sop/platform-verification.json`。证据变化、流程清单变化、源码变化或绑定提交不在当前 Git 历史中时，L4 失败。后续仅提交治理文件不会使源码证据过期，但源码或 required 流程范围变化会。直接手改 `compile/smoke=passed` 只兼容旧版 L3 迁移检查，不能通过 v2 的 L4。
+
+`platform-flows.json` 是流程门禁，不是执行脚本。Agent 必须先识别平台项目，再加载对应平台技能；微信小程序至少使用编译器和页面自动化能力，遇到运行时错误加载调试能力，要求真机预览时再加载预览能力。每条流程执行后立即写入状态和证据路径；无法执行时写 `blocked` 或 `unverified` 及责任人/下一步，不能只在最终文字里说明“已覆盖”。
 
 凭据证明“指定证据与指定源码版本绑定且当前未变化”，不能独立证明截图语义真实；UI 行为仍需自动化断言或真实人工验收。平台不可用时保留 blocker，不生成伪 passed 凭据。

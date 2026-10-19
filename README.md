@@ -39,7 +39,7 @@ python .sop/runtime/sop.py handover
 
 提交已完成切片后运行 `checkpoint --task T-001`；最终治理记录提交后运行 `checkpoint --stage L4`。新协议的 L4 同时要求任务检查点和当前 HEAD 的最终检查点。工具不会执行无差别 `git add .`，提交前由 Agent 审阅暂存内容和秘密文件。
 
-进入 L3/L4 前另运行 `audit`：它检查 AC 是否存在、任务声明的代码/测试路径是否存在，以及启用目标平台时是否有完整的平台编译/冒烟记录。`audit` 是语义一致性检查，不代替测试或人工验收。
+进入 L3/L4 前另运行 `audit`：它检查 AC 是否存在、任务声明的代码/测试路径是否存在，以及启用目标平台时是否有完整的平台编译/冒烟记录和页面关键流程记录。目标平台项目必须维护 `.sop/platform-flows.json`：先登记源码/app 配置发现的页面，再登记本次交付的 required 用户流程；每条流程必须有真实平台操作证据，或明确记录 blocked/unverified 的原因、责任人和下一步。平台编译通过不代表页面流程覆盖。`audit` 是语义一致性检查，不代替测试或人工验收。
 
 命令使用参数数组，例如 `"test": ["python","-m","unittest","discover","-s","tests"]`。Windows 的 .cmd/.bat 可显式配置 `["cmd","/c","npm","test"]`。先审阅配置再执行，命令拥有当前用户权限。
 
@@ -96,6 +96,7 @@ your-project/
     ├── runtime/              # 可独立运行的版本快照
     ├── tasks.json            # 机器可读任务/AC/测试/验证状态
     ├── platform-verification.json # 真实平台编译/冒烟记录（按需启用）
+    ├── platform-flows.json        # 页面清单与关键用户流程（平台项目必填）
     ├── environment-verification.json # 按 test/dev/staging/prod 分开的结果
     ├── checkpoints.json      # 本地 Git 任务/阶段检查点（本地忽略）
     ├── sync.json             # 最近一次状态同步指纹（本地忽略）
