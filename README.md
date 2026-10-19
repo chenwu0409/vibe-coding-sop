@@ -19,7 +19,8 @@ python .sop/runtime/sop.py check
 ## 项目日常使用
 
 ```sh
-python .sop/runtime/sop.py check --stage L0
+# 每次开始或继续任务先只读汇总当前阻塞和下一步
+python .sop/runtime/sop.py guard
 # 全栈/小程序先执行环境诊断，并配置项目自己的数据库/API只读探针
 python .sop/runtime/sop.py doctor --profile wechat-fullstack
 # L3/L4 任务语义与平台记录检查
@@ -30,7 +31,7 @@ python .sop/runtime/sop.py check --stage L4
 python .sop/runtime/sop.py handover
 ```
 
-每次新任务或继续任务都先运行 `check`，把输出作为起始基线。需求、设计、计划、平台边界、配置、共享契约或源码变化后重新运行 check；若出现 scope 变化，受影响复核必须重新确认。交付时严格按 `verify` → 真实目标平台/界面检查 → `check --stage L4` 收口。
+每次新任务或继续任务都先运行只读 `guard`，把输出作为起始基线；需要详细结构结果时运行 `check`，需要语义结果时运行 `audit`。需求、设计、计划、平台边界、配置、共享契约或源码变化后重新运行 guard；若出现 scope 变化，受影响复核必须重新确认。交付时严格按 `verify` → 真实目标平台/界面检查 → `check --stage L4` 收口。
 
 每个任务和环节完成后必须同步：更新 `.sop/tasks.json` 的任务状态、AC/代码/测试/证据字段，同时更新受影响的 plan/development/validation/risk 文档，再运行 `python .sop/runtime/sop.py sync`。v2 任务清单用 `release.required_task_ids` 和 `required_ac_ids` 定义本次交付范围；L4 要求这些任务全部 done/passed 且 AC 被覆盖。`check` 会校验同步指纹；源码、配置、任务清单或阶段文档发生变化而未重新同步时，检查失败。同步不是人工审批，也不能替代真实平台验证。
 

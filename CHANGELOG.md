@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-10-19
+
+- 增加只读 `guard` 导航入口，复用现有检查并输出当前阻塞和下一步，减少 Agent 自己判断流程的负担。
+- doctor 增加 Windows 下 npm/npx/pnpm/yarn 命令包装诊断，保持 `shell=False` 和参数数组边界。
+- handover 自动嵌入 checkpoints 记录和哈希，提升跨 Agent 交接时的可核验性。
+- 收敛 Agent 入口和文档提示：guard 负责导航，check/audit/verify/checkpoint 继续负责各自门禁。
+
 ## 0.3.1 — 2026-10-19
 
 - 增加受控任务状态命令 `task start/block/verify/done`，阻止直接把没有测试或证据的任务标记为 done/passed。

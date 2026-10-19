@@ -25,6 +25,7 @@ Obsidian 保存研究过程和复盘；本仓库维护分发版规则、模板�
 0.2.5 增加 `audit` 语义一致性检查和可选平台验证记录。迁移时更新锁定 runtime/core，若项目有微信小程序、Android、iOS 或其他独立平台，在 project.json 设置 `platform.required=true`，填写 `.sop/platform-verification.json`，并运行 `audit --stage L3` 与 `audit --stage L4`。L 档仍是单 Agent，不因有 tasks.json 就获得多 Agent 并行能力。
 0.3.0 将 tasks 升级为显式 release scope，并新增分环境验证、run ID 数据生命周期、日志脱敏、平台凭据、doctor 和 Git checkpoint。旧项目迁移时不能只替换 `sop.py`：先把 tasks 转为 v2 并决定 required task/AC；在 project.json 补 environments/test_lifecycle/doctor_checks；全栈项目补 environment-verification；目标平台重新生成 attest；提交后分别登记任务和 L4 checkpoint。旧 v1 任务仍可读取，但没有 backlog 语义，不能作为完整 0.3 交付证据。
 0.3.1 增加受控任务状态转换和 L3 checkpoint 硬门禁。迁移时更新 `sop.py`、AGENTS/Skill、protocol 和 README；让 Agent 通过 `task start/block/verify/done` 推进状态，不能直接把未验证任务写成 done/passed；使用 `checkpoint --stage L3` 前必须准备新鲜 verify 证据、通过 audit、至少一项已验证任务和干净 Git 工作区。旧项目仍可读取原 tasks.json，但建议逐项通过新命令重建当前任务状态。
+0.3.2 增加只读 `guard` 导航入口，复用已有检查并输出当前阻塞和下一步；doctor 增加 Windows npm/npx/pnpm/yarn 命令包装诊断；handover 嵌入 checkpoints 记录和哈希。迁移时先运行 guard，保留已有项目材料和证据，不新增重复门禁。
 5. 一起更新 sop_version，重新运行验证；内容变化导致的复核过期需重新确认。
 
 不能只改版本号，也不要直接用新模板覆盖业务文档。首版保持 0.x，待两个真实项目验证后再评估 1.0。

@@ -14,7 +14,11 @@
 - `test_lifecycle.setup/cleanup`：可选参数数组。`verify` 为 setup、全部门禁和 cleanup 注入同一 `SOP_RUN_ID`；cleanup 在门禁失败或超时后仍会运行，cleanup 失败导致 verify 失败。
 - `doctor_checks`：项目自己的只读诊断探针，例如测试数据库连通性、迁移权限和 API health。参数数组不经过 shell；探针必须只读，不把迁移或数据修复伪装成诊断。
 
+`guard` 是只读导航入口：它复用 `check`、`audit` 和 checkpoint 的既有规则，汇总当前阶段阻塞和下一步，不写入状态、不替代测试、不产生新的证据体系。Agent 每次开始或继续任务先运行 `guard`；详细诊断仍回到对应的单项命令。
+
 初始化会在项目根目录创建自己的本地 Git 仓库。远端不是必需项，但 `.sop/git-baseline.json` 指向的命名提交是必需项；没有 Git 基线，`check` 不通过。使用 `python .sop/runtime/sop.py baseline --message "..."` 建立或更新基线，不由工具自动提交业务代码。
+
+Windows 下命令仍使用参数数组和 `shell=False`。需要运行 npm/npx/pnpm/yarn 时，应配置 `cmd /c` 包装，例如 `["cmd", "/c", "npm", "test"]`；doctor 会在 Windows 下报告未包装的命令并给出修复提示。
 
 S 要求 test；M 加 build；L 加 lint；high 对任意档加 security。具体工具和覆盖率策略由项目决定。M 的 build 对解释型项目也应配置真实的包导入、编译或安装验证。没有对应检查时应重新评估档位，不使用空命令冒充通过。只执行档位要求的命令；额外检查可组合到项目已有测试脚本中。
 
@@ -111,7 +115,7 @@ scope 绑定对应阶段及之前的文档、配置；acceptance/release 还绑�
 
 ## 退出码
 
-handover 额外读取 .sop/docs/handover.md，将其路径和 SHA256 写入 narrative。ready 表示 L4 材料/登记证据状态；handover_complete 表示交接正文结构已补齐，handover_issues 列出缺口，两者独立。接收方应检查正文哈希；快照引用正文而非嵌入全文，归档时必须一起保存。旧 design_decisions/next_actions 字段保留兼容，实际理由与下一步写正文。
+handover 额外读取 .sop/docs/handover.md，将其路径和 SHA256 写入 narrative，并嵌入当前 checkpoints 记录及其哈希，方便跨 Agent 交接时核对本地 checkpoint。ready 表示 L4 材料/登记证据状态；handover_complete 表示交接正文结构已补齐，handover_issues 列出缺口，两者独立。接收方应检查正文和 checkpoints 哈希；快照引用正文而非嵌入全文，归档时必须一起保存。旧 design_decisions/next_actions 字段保留兼容，实际理由与下一步写正文。
 
 - 0：命令成功；check 表示所选阶段材料/证据符合协议，verify 表示本次自动检查通过。
 - 1：检查未就绪或自动验证失败。

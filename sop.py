@@ -1099,6 +1099,10 @@ def doctor_project(args):
     missing = [name for name in required_commands if not command_valid(config["commands"].get(name))]
     add("quality_commands", "failed" if missing else "passed",
         ("未配置: " + ", ".join(missing)) if missing else "all configured")
+    windows_commands = command_platform_issues(config)
+    add("windows_commands", "failed" if windows_commands else "passed",
+        "；".join(windows_commands) if windows_commands
+        else "Windows command forms are compatible or not applicable")
     if args.profile == "wechat-fullstack":
         add("wechat_project", "passed" if project_config.is_file() else "failed",
             "project.config.json present" if project_config.is_file() else "缺少 project.config.json")
@@ -1132,6 +1136,66 @@ def doctor_project(args):
         for check in checks:
             print(f"- {check['status']}: {check['name']} / {check['detail']}")
     return 0 if result["ready"] else 1
+
+
+def command_platform_issues(config):
+    if os.name != "nt":
+        return []
+    issues = []
+    wrappers = {"npm", "npx", "pnpm", "yarn"}
+    for name in requirements(config)["commands"]:
+        command = config["commands"].get(name)
+        if not command_valid(command):
+            continue
+        executable = Path(command[0]).name.lower()
+        if executable in wrappers:
+            issues.append(f"{name} 使用 {command[0]}；Windows 请配置 ['cmd','/c','{command[0]}', ...]")
+    return issues
+
+
+def suggested_actions(blockers, target):
+    actions = []
+    for item in blockers:
+        if "verify" in item:
+            actions.append("运行 python .sop/runtime/sop.py verify")
+        elif "audit" in item or "AC" in item:
+            actions.append(f"运行 python .sop/runtime/sop.py audit --stage {target}")
+        elif "Git" in item or "提交" in item:
+            actions.append("审阅差异并提交本地 Git，再重试 checkpoint")
+        elif "平台" in item or "platform" in item:
+            actions.append("记录真实平台证据，或登记 ENV blocked/unverified")
+        elif "任务" in item or "task" in item:
+            actions.append("使用 task start/block/verify/done 推进任务状态")
+    return list(dict.fromkeys(actions))
+
+
+def guard_project(args):
+    root = Path(args.project).resolve()
+    config = load_project(root)
+    state = read_json(root / ".sop/state.json")
+    target = args.stage or state.get("target_stage")
+    stage = stage_number(target)
+    blockers = inspection(root, config, stage)
+    if stage == 3:
+        blockers.extend(checkpoint_issues(root, stage))
+    # Keep the read-only guard as an aggregator: all detailed checks remain in
+    # check/audit/checkpoint, so the project has one source of truth for rules.
+    blockers = list(dict.fromkeys(blockers))
+    next_actions = suggested_actions(blockers, target)
+    if not blockers:
+        next_actions.append("当前阶段门禁已满足；继续下一切片，或按交付顺序收口")
+    result = {"stage": target, "ready": not blockers, "blockers": blockers,
+              "next_actions": list(dict.fromkeys(next_actions)),
+              "meaning": "只读流程导航；不修改状态、不代替业务验收"}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(target + (" guard 通过" if not blockers else " guard 阻塞"))
+        for item in blockers:
+            print("- blocker: " + item)
+        for action in result["next_actions"]:
+            print("- next: " + action)
+    return 0 if not blockers else 1
 
 
 def sync_project(args):
@@ -1263,10 +1327,16 @@ def handover_project(args):
     root = Path(args.project).resolve()
     config = load_project(root)
     blockers = inspection(root, config, 4)
+    checkpoint_path = root / ".sop/checkpoints.json"
+    checkpoint_record = read_json(checkpoint_path) if checkpoint_path.is_file() else None
     record = {"schema_version": 1, "generated_at": now(), "project": config,
               "source_sha256": fingerprint(root), "ready": not blockers,
-              "blockers": blockers, "design_decisions": [], "next_actions": [],
+              "blockers": blockers, "design_decisions": [],
+              "next_actions": suggested_actions(blockers, "L4"),
               "note": "补充设计理由与下一步；ready 仅表示材料与登记证据合规"}
+    record["checkpoints"] = checkpoint_record
+    record["checkpoints_sha256"] = (sha(checkpoint_path)
+                                     if checkpoint_path.is_file() else None)
     narrative = root / ".sop/docs/handover.md"
     narrative_issues = document_issues(root, "handover")
     record["handover_complete"] = not narrative_issues
@@ -1309,6 +1379,11 @@ def main(argv=None):
         if name == "sync":
             command.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
         command.set_defaults(func=function)
+    guard = sub.add_parser("guard", help="只读汇总当前阶段阻塞和下一步")
+    guard.add_argument("--project", default=".")
+    guard.add_argument("--stage", choices=["L0", "L1", "L2", "L3", "L4"])
+    guard.add_argument("--json", action="store_true")
+    guard.set_defaults(func=guard_project)
     task = sub.add_parser("task", help="通过受控状态转换更新任务清单")
     task.add_argument("action", choices=sorted(TASK_TRANSITIONS),
                       help="start/block/verify/done；verify 只登记已存在的真实证据")

@@ -5,7 +5,7 @@ description: Execute the project-local Vibe Coding SOP when a repository has .so
 
 # Vibe Coding SOP
 
-If `.sop/project.json` exists, read it and the project's agent entry file; run `python .sop/runtime/sop.py check` before coding, confirm the project has a local Git baseline, and treat the output as the task's starting baseline. For full-stack or platform work, run the applicable `doctor` profile before implementation. Load `.sop/core/workflow.md` and only the documents relevant to the current task.
+If `.sop/project.json` exists, read it and the project's agent entry file; run the read-only `python .sop/runtime/sop.py guard` before coding, confirm the project has a local Git baseline, and treat its output as the task's starting baseline. Use `check` or `audit` for the detailed gate named by guard. For full-stack or platform work, run the applicable `doctor` profile before implementation. Load `.sop/core/workflow.md` and only the documents relevant to the current task.
 
 If initialization is requested, locate the distributed package containing `sop.py` and `profiles/`. Read its README and initialize the specified project with a suitable profile. If the package is unavailable, report that dependency rather than inventing an installation command.
 

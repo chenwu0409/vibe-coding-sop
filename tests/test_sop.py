@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import sop
 
@@ -631,6 +632,20 @@ class SopTests(unittest.TestCase):
         self.assertTrue(record["blockers"])
         self.assertFalse(record["handover_complete"])
         self.assertTrue(record["handover_issues"])
+        self.assertEqual(record["checkpoints"]["schema_version"], 1)
+
+    def test_guard_is_read_only_and_reports_next_actions(self):
+        self.init()
+        self.assertEqual(self.call("guard", "--project", self.root, "--json"), 1)
+        self.assertFalse((self.root / ".sop/sync.json").exists())
+
+    def test_windows_npm_command_gets_explicit_wrapper_guidance(self):
+        self.init("M")
+        config = self.config()
+        config["commands"]["test"] = ["npm", "test"]
+        with mock.patch.object(sop.os, "name", "nt"):
+            issues = sop.command_platform_issues(config)
+        self.assertTrue(any("cmd" in issue and "test" in issue for issue in issues), issues)
 
     def test_handover_links_completed_narrative_without_claiming_delivery(self):
         self.init()
