@@ -31,4 +31,4 @@ TODO: 实现顺序、首个反馈点、完成条件。M/L 引用 development；�
 TODO: 外部/内部/技术/业务中适用的风险、前置条件、责任人、替代方法；里程碑以可演示成果定义。记录进行中/阻塞/已验证、耗时与返工；不以文件数代表完成。
 
 ## 状态、基线与恢复
-TODO: 当前 `state.json.target_stage`；`.sop/tasks.json` 中任务状态；任务/文档与源码是否同步；最近 `sync` 指纹；Git 基线提交、任务提交差异、校验方式、恢复步骤和数据限制。每完成一个任务必须同步 tasks/plan/development/validation，再运行 `sop.py sync` 和当前阶段 check，最后提交本地 Git。
+TODO: 当前 `state.json.target_stage`；`.sop/tasks.json` 中故事级任务状态；任务/文档与源码是否同步；最近 `sync` 指纹；Git 基线提交、故事提交差异、校验方式、恢复步骤和数据限制。内部 checklist 项按影响面做定向验证；每完成一个用户故事再统一同步 tasks/plan/development/validation、运行完整 `verify` 与当前阶段检查、提交本地 Git 并登记 checkpoint。最终 release 检查最近成功 `verify` 的源码/配置指纹；仍匹配当前输入时复用，过期才重跑全量门禁。
