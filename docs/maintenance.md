@@ -27,7 +27,8 @@ Obsidian 保存研究过程和复盘；本仓库维护分发版规则、模板�
 0.3.1 增加受控任务状态转换和 L3 checkpoint 硬门禁。迁移时更新 `sop.py`、AGENTS/Skill、protocol 和 README；让 Agent 通过 `task start/block/verify/done` 推进状态，不能直接把未验证任务写成 done/passed；使用 `checkpoint --stage L3` 前必须准备新鲜 verify 证据、通过 audit、至少一项已验证任务和干净 Git 工作区。旧项目仍可读取原 tasks.json，但建议逐项通过新命令重建当前任务状态。
 0.3.2 增加只读 `guard` 导航入口，复用已有检查并输出当前阻塞和下一步；doctor 增加 Windows npm/npx/pnpm/yarn 命令包装诊断；handover 嵌入 checkpoints 记录和哈希。迁移时先运行 guard，保留已有项目材料和证据，不新增重复门禁。
 0.3.3 增加目标平台页面清单与关键流程门禁。迁移平台项目时复制新的 runtime/templates，生成 `.sop/platform-flows.json`，从 app 路由和需求登记页面及 required 用户路径；逐条执行真实平台流程，保存证据后重新运行 attest、audit、sync、check。旧平台项目没有流程记录时只能判为待迁移/未验证，不能沿用“编译通过即交付”。
-5. 一起更新 sop_version，重新运行验证；内容变化导致的复核过期需重新确认。
+0.3.4 将任务默认粒度改为用户故事或独立缺陷，并把验证、文档同步、提交和 checkpoint 集中在故事边界及最终交付；复核范围按实际批准材料计算，最终 release 仍绑定源码和平台证据；required 平台故事需在实现前预检工具、账号审批和跨端可达性。
+版本升级后，同步更新 `sop_version` 并重新运行验证；只刷新实际受影响的复核。
 
 不能只改版本号，也不要直接用新模板覆盖业务文档。首版保持 0.x，待两个真实项目验证后再评估 1.0。
 
