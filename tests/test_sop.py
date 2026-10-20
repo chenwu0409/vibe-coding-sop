@@ -563,7 +563,7 @@ class SopTests(unittest.TestCase):
         self.assertIn("目标平台与源码边界", validation)
         self.assertIn("目标平台/运行时", protocol)
         self.assertIn("平台编译/打包", agents)
-        self.assertIn("每次任务的强制闭环", workflow)
+        self.assertIn("每个故事的执行闭环", workflow)
         self.assertIn("`check --stage L4`", workflow)
         self.assertIn("scope_sha256", protocol)
         self.assertIn("UI 与手势验证", validation)
