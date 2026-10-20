@@ -31,11 +31,13 @@ python .sop/runtime/sop.py check --stage L4
 python .sop/runtime/sop.py handover
 ```
 
-每次新任务或继续任务都先运行只读 `guard`，把输出作为起始基线；需要详细结构结果时运行 `check`，需要语义结果时运行 `audit`。需求、设计、计划、平台边界、配置、共享契约或源码变化后重新运行 guard；若出现 scope 变化，受影响复核必须重新确认。交付时严格按 `verify` → 真实目标平台/界面检查 → `check --stage L4` 收口。
+每个用户故事开始时运行只读 `guard`，把输出作为起始基线；需要诊断或阶段收口时运行 `check`，需要语义结果时运行 `audit`。需求、设计、平台边界、共享契约或 required AC 变化时更新材料并重跑受影响复核。普通源码迭代不让需求、设计和验收复核失效；最终 release 复核绑定当前源码、证据和交付范围。交付时严格按 `verify` → required 目标平台流程 → `check --stage L4` 收口。
 
-每个任务和环节完成后必须同步：更新 `.sop/tasks.json` 的任务状态、AC/代码/测试/证据字段，同时更新受影响的 plan/development/validation/risk 文档，再运行 `python .sop/runtime/sop.py sync`。v2 任务清单用 `release.required_task_ids` 和 `required_ac_ids` 定义本次交付范围；L4 要求这些任务全部 done/passed 且 AC 被覆盖。`check` 会校验同步指纹；源码、配置、任务清单或阶段文档发生变化而未重新同步时，检查失败。同步不是人工审批，也不能替代真实平台验证。
+`.sop/tasks.json` v2 用 `release.required_task_ids` 和 `required_ac_ids` 定义本次交付范围；L4 要求这些任务全部 done/passed 且 AC 被覆盖。任务默认以可观察的跨层用户故事或独立缺陷为单位；页面、接口、文件格式和内部实现步骤作为故事卡 checklist，不各自重复完整生命周期。故事 checklist 内按影响面运行定向测试。故事完成时统一更新任务状态和受影响文档，运行一次全量 `verify`、required 平台流程、`audit`、`sync`，然后提交并登记一个故事 checkpoint。最终 release 检查最近一次成功 verify 是否仍绑定当前源码和配置：证据新鲜就复用，过期才重跑。`check` 会校验同步指纹；需求范围、共享契约和配置变化应及时同步，普通源码迭代不要求每次更新治理文档。同步不是人工审批，也不能替代真实平台验证。
 
-任务状态优先使用受控命令推进：`python .sop/runtime/sop.py task start T-001`、`task verify T-001`、`task done T-001`；无法验证时使用 `task block T-001 --reason "平台 CLI 不可用" --owner "项目负责人" --next-action "打开工具并提供编译证据"`。`checkpoint --stage L3` 会检查真实 verify 证据、audit、已完成任务和干净 Git 工作区。
+required 平台故事排期时先预检工具/模拟器、测试账号与审批、Web/API 可达性和合成资料。把账号或网络访问问题在实现前暴露，作为故事依赖处理；必要时先做不依赖该环境的故事，或将受阻故事明确移出当前 release。
+
+任务状态优先使用受控命令推进：`python .sop/runtime/sop.py task start T-001`、`task verify T-001`、`task done T-001`；无法验证时使用 `task block T-001 --reason "平台 CLI 不可用" --owner "项目负责人" --next-action "打开工具并提供编译证据"`。仅对故事级任务登记 checkpoint；`checkpoint --stage L3` 会检查真实 verify 证据、audit、已完成任务和干净 Git 工作区。
 
 提交已完成切片后运行 `checkpoint --task T-001`；最终治理记录提交后运行 `checkpoint --stage L4`。新协议的 L4 同时要求任务检查点和当前 HEAD 的最终检查点。工具不会执行无差别 `git add .`，提交前由 Agent 审阅暂存内容和秘密文件。
 
