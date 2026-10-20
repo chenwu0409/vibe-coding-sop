@@ -67,7 +67,7 @@ def write_json(path, value):
     # Replace the entire record only after serialization succeeds.
     content = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
     temp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    temp.write_text(content, encoding="utf-8")
+    temp.write_bytes(content.encode("utf-8"))
     temp.replace(path)
 
 
@@ -815,10 +815,31 @@ def document_digest(root, names):
 
 def review_scope(root, config, spec, name):
     stage = REVIEW_STAGE[name]
-    docs = [d for d in spec["documents"] if DOC_STAGE[d] <= stage]
-    payload = {"documents": document_digest(root, docs), "config": config}
-    if stage == 4:
-        payload["source"] = fingerprint(root)
+    if name == "acceptance":
+        # Acceptance approves observable requirements, not each implementation edit.
+        docs = [d for d in ("requirements",) if d in spec["documents"]]
+        board_path = root / ".sop/tasks.json"
+        board = read_json(board_path) if board_path.is_file() else {}
+        release = board.get("release", {}) if isinstance(board, dict) else {}
+        payload = {"documents": document_digest(root, docs),
+                   "required_ac_ids": release.get("required_ac_ids", [])}
+    elif name == "release":
+        docs = list(spec["documents"])
+        board_path = root / ".sop/tasks.json"
+        board = read_json(board_path) if board_path.is_file() else {}
+        release = board.get("release", {}) if isinstance(board, dict) else {}
+        flows_path = root / ".sop/platform-flows.json"
+        payload = {"documents": document_digest(root, docs), "config": config,
+                   "required_task_ids": release.get("required_task_ids", []),
+                   "required_ac_ids": release.get("required_ac_ids", []),
+                   "source": fingerprint(root),
+                   "platform_flows": sha(flows_path) if flows_path.is_file() else None}
+    else:
+        docs = [d for d in spec["documents"] if DOC_STAGE[d] <= stage]
+        keys = ("profile", "risk") if name == "requirements" else (
+            "profile", "risk", "stack", "modules", "platform", "environments")
+        payload = {"documents": document_digest(root, docs),
+                   "config": {key: config.get(key) for key in keys}}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
