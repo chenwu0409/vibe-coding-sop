@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import re
 import shutil
 import subprocess
@@ -695,7 +696,7 @@ class SopTests(unittest.TestCase):
         self.init("M")
         config = self.config()
         config["commands"]["test"] = ["npm", "test"]
-        with mock.patch.object(sop.os, "name", "nt"):
+        with mock.patch.object(sop, "os", SimpleNamespace(name="nt")):
             issues = sop.command_platform_issues(config)
         self.assertTrue(any("cmd" in issue and "test" in issue for issue in issues), issues)
 
