@@ -28,6 +28,11 @@ Obsidian 保存研究过程和复盘；本仓库维护分发版规则、模板�
 0.3.2 增加只读 `guard` 导航入口，复用已有检查并输出当前阻塞和下一步；doctor 增加 Windows npm/npx/pnpm/yarn 命令包装诊断；handover 嵌入 checkpoints 记录和哈希。迁移时先运行 guard，保留已有项目材料和证据，不新增重复门禁。
 0.3.3 增加目标平台页面清单与关键流程门禁。迁移平台项目时复制新的 runtime/templates，生成 `.sop/platform-flows.json`，从 app 路由和需求登记页面及 required 用户路径；逐条执行真实平台流程，保存证据后重新运行 attest、audit、sync、check。旧平台项目没有流程记录时只能判为待迁移/未验证，不能沿用“编译通过即交付”。
 0.3.4 将任务默认粒度改为用户故事或独立缺陷，并把验证、文档同步、提交和 checkpoint 集中在故事边界及最终交付；复核范围按实际批准材料计算，最终 release 仍绑定源码和平台证据；required 平台故事需在实现前预检工具、账号审批和跨端可达性。
+0.3.5 修复 `baseline` 对脏工作区的隐式提交；迁移时保留已有 `.sop/git-baseline.json`，不要重新建基线。无 HEAD 的新仓库先审阅并暂存明确文件，再显式 `baseline --commit-initial`。`verify --gate` 只用于故事定向证据，不覆盖全量发布结果；升级 AGENTS/阶段手册与运行时后，用临时项目跑 SOP 回归测试。当前 `release` 保持原范围，是否拆分历史任务属于交付决定，不能为求全绿自动删除 required 项。
+
+0.3.6 新增平台凭据 v3；升级时在 `project.json.platform.source_paths` 明确列出真实应用源码和构建/运行入口，重新用真实编译、冒烟证据运行 `attest-platform`。`release open` 先预览旧范围的未完成任务，再由负责人确认新的交付范围并显式应用；不得仅为通过门禁迁走历史阻塞。可选 `gate_summary_formats`、`gate_artifacts` 要与真实测试命令的输出格式和产物路径一致。
+
+0.3.7 增加 `release_gates`。升级平台项目时把真实 E2E 与 test/build/security/integration 等基础门禁一同列出；旧全量报告缺 E2E 时必须重新验证，不能沿用定向报告。业务项目自己的 E2E 合成机构须带同次 run ID 并在用例及外层 cleanup 中清理。服务版本号从 `-dirty` 改为 `-dirty-短哈希`，更新健康检查与缓存排查脚本的格式断言。
 版本升级后，同步更新 `sop_version` 并重新运行验证；只刷新实际受影响的复核。
 
 不能只改版本号，也不要直接用新模板覆盖业务文档。首版保持 0.x，待两个真实项目验证后再评估 1.0。

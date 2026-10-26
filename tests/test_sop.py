@@ -36,7 +36,10 @@ class SopTests(unittest.TestCase):
         sop.write_json(self.root / ".sop/project.json", config)
 
     def baseline(self):
-        self.assertEqual(self.call("baseline", "--project", self.root), 0)
+        subprocess.run(["git", "-C", str(self.root), "add", "-A"],
+                       check=True, capture_output=True)
+        self.assertEqual(self.call("baseline", "--project", self.root,
+                                   "--commit-initial"), 0)
 
     def sync(self, stage=None):
         args = ["sync", "--project", self.root]
@@ -394,8 +397,11 @@ class SopTests(unittest.TestCase):
     def test_platform_attest_binds_evidence_and_git_commit(self):
         self.init("M")
         config = self.config()
-        config["platform"] = {"required": True, "name": "wechat-miniapp"}
+        config["platform"] = {"required": True, "name": "wechat-miniapp",
+                              "source_paths": ["miniprogram"]}
         self.save_config(config)
+        (self.root / "miniprogram").mkdir()
+        (self.root / "miniprogram/app.json").write_text("{}\n", encoding="utf-8")
         self.baseline()
         evidence = self.root / ".sop/evidence/wechat.txt"
         evidence.parent.mkdir(parents=True, exist_ok=True)
@@ -508,9 +514,9 @@ class SopTests(unittest.TestCase):
 
     def test_missing_command_does_not_pass(self):
         self.init()
-        self.assertEqual(self.call("verify", "--project", self.root), 1)
-        report = sop.read_json(self.root / ".sop/evidence/latest.json")
-        self.assertEqual(report["results"]["test"]["status"], "failed")
+        self.baseline()
+        self.assertEqual(self.call("verify", "--project", self.root), 2)
+        self.assertFalse((self.root / ".sop/evidence/latest.json").exists())
 
     def test_required_sections_and_quoted_instructions(self):
         self.init()

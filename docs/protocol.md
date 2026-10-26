@@ -14,9 +14,9 @@
 - `test_lifecycle.setup/cleanup`：可选参数数组。`verify` 为 setup、全部门禁和 cleanup 注入同一 `SOP_RUN_ID`；cleanup 在门禁失败或超时后仍会运行，cleanup 失败导致 verify 失败。
 - `doctor_checks`：项目自己的只读诊断探针，例如测试数据库连通性、迁移权限和 API health。参数数组不经过 shell；探针必须只读，不把迁移或数据修复伪装成诊断。
 
-`guard` 是只读导航入口：它复用 `check`、`audit` 和 checkpoint 的既有规则，汇总当前阶段阻塞和下一步，不写入状态、不替代测试、不产生新的证据体系。Agent 每次开始或继续任务先运行 `guard`；详细诊断仍回到对应的单项命令。
+`guard` 是只读导航入口：默认汇总当前阶段的发布阻塞；`guard --task <ID>` 只核对该任务的状态、AC、文件证据和 Git checkpoint。任务检查通过表示该任务已有可追溯记录，不表示当前源码或整版可发布。整版结论仍使用 `guard --stage L4`；详细诊断回到对应的单项命令。
 
-初始化会在项目根目录创建自己的本地 Git 仓库。远端不是必需项，但 `.sop/git-baseline.json` 指向的命名提交是必需项；没有 Git 基线，`check` 不通过。使用 `python .sop/runtime/sop.py baseline --message "..."` 建立或更新基线，不由工具自动提交业务代码。
+初始化会在项目根目录创建自己的本地 Git 仓库。远端不是必需项，但 `.sop/git-baseline.json` 指向的命名提交是必需项；没有 Git 基线，`check` 不通过。已有干净 HEAD 时运行 `baseline` 只登记该提交；已有有效基线时再次运行只读取原记录。尚无 HEAD 时，先审阅文件并明确暂存，再运行 `baseline --commit-initial` 提交**已暂存**文件；命令不会自动 `git add`，会拒绝已暂存的 `.env`，也会拒绝仍有未暂存/未跟踪文件，保证基线对应完整工作区。已有提交但工作区不干净时必须先自行审阅并提交，`baseline` 不会代为提交。
 
 Windows 下命令仍使用参数数组和 `shell=False`。需要运行 npm/npx/pnpm/yarn 时，应配置 `cmd /c` 包装，例如 `["cmd", "/c", "npm", "test"]`；doctor 会在 Windows 下报告未包装的命令并给出修复提示。
 
@@ -32,9 +32,13 @@ required 平台故事进入实现前先预检真实工具/模拟器、账号与�
 
 `.sop/state.json` 的 `target_stage` 默认为 L0。完成当前阶段后手动改为下一阶段，或用 `check --stage L3` 临时检查；阶段改变后必须运行 `sync --stage <阶段>`。检查累积前面阶段的要求。包含 TODO/TBD/NEEDS CLARIFICATION/双花括号占位符或缺少必需二级章节内容的文档不能通过。必需标题定义在 gates/document-sections.json，不随意改名；引用块中的说明、标题、空复选框不算项目内容。
 
-`.sop/tasks.json` 是任务状态的机器可读权威文件。v2 的 `release.required_task_ids` 和 `release.required_ac_ids` 是本次交付范围；每项任务至少包含 `id`、`status`、`ac_ids`、`implementation`、`tests`、`evidence` 和 `verification`。L3/L4 必须有至少一项任务；L4 中所有 required task 必须 `status=done`、`verification=passed`，required AC 必须真实存在并被 required task 覆盖。未来任务放在非 required backlog 中并记录延期理由，不得用 `in_progress` 掩盖本次缺口。v1 兼容读取，但没有显式 backlog 语义，L4 将所有任务视为本次范围。
+`.sop/tasks.json` 是任务状态的机器可读权威文件。v2 的 `release.id`、`required_task_ids` 和 `required_ac_ids` 冻结当前拟发布版本；新版本先确定范围，再把历史任务留作已完成记录或明确的 backlog，不自动追加到当前 release。每项任务至少包含 `id`、`status`、`ac_ids`、`implementation`、`tests`、`evidence` 和 `verification`。L4 中所有 required task 必须 `done/passed`，required AC 必须真实存在并被覆盖。非 required 未完成任务需写延期原因、责任人和下一步。v1 兼容读取，但没有显式 backlog 语义，L4 将所有任务视为本次范围。
 
 `audit` 是显式的语义一致性检查：它确认任务引用的 AC 在 requirements 中存在，implementation/tests 声明的路径在项目内存在，release AC 有任务覆盖；全栈项目核对交付环境的逐项状态；当 `platform.required=true` 时，L4 只接受 `attest-platform` 生成且证据哈希、源码指纹、流程清单哈希和 Git 历史仍有效的平台凭据。它不判断测试断言质量，也不替代真实用户验收。
+
+平台凭据 v3 的源码指纹由 `platform.source_paths` 限定；流程定义指纹忽略状态与证据字段，仍对 required 路径和页面定义变化敏感。`release open` 默认仅预览；显式 `--apply` 将旧范围存入 `release_history`，选中任务 AC 自动组成新 required AC 集，移出范围的未完成任务须保留 backlog 理由。`verify` 的结构化 summary 与同次运行 artifact 哈希记录在各门禁结果中；声明了格式却无法解析时失败，不能只看进程退出码。
+
+`release_gates` 是发布自动门禁的权威顺序表：无 `--gate` 的 `verify` 必须逐项执行，L4 必须逐项检查同一 run 的状态、日志与可配置数量。不得遗漏 profile/risk/stack 的基础门禁；目标平台配置了 E2E 时必须显式列入，否则配置检查报“发布验证不完整”。
 
 任务状态由 `task` 命令提供受控转换：`start` 将 planned/blocked 转为 in_progress/pending；`verify` 仅在 AC、代码、测试路径真实存在且 evidence 文件真实存在、非空时转为 in_progress/passed；`done` 只接受已经 passed 的任务；`block` 要求填写 `defer_reason`、`owner` 和 `next_action`，并转为 blocked/blocked。直接编辑 JSON 仍可被读取以兼容旧项目，但 `check`/`audit`/checkpoint 会拒绝不一致状态。
 
@@ -99,7 +103,7 @@ scope 绑定对应阶段及之前的文档、配置；acceptance/release 还绑�
 
 ## 自动证据与范围
 
-`verify` 保存 run ID、每个门禁的退出码、脱敏日志哈希、源码指纹、配置哈希和时间。每条子进程收到相同 `SOP_RUN_ID`；项目据此标记测试租户/数据，cleanup 必须只删除该 run ID 的数据。无命令、setup/cleanup 失败、非零退出、超时、启动失败、执行期间输入变化均失败；`check --stage L4` 再核对日志是否存在且未改动。交接文件会保留尚未完成项。
+`verify` 保存 run ID、执行范围、每个门禁的退出码、脱敏日志哈希、源码指纹、配置哈希和时间。`verify --gate <名称>` 可重复指定已配置门禁，仅为本次影响面产生 `focused-latest.json`；无参数的全量 `verify` 才更新 `latest.json`，L4 只认可全量记录。每条子进程收到相同 `SOP_RUN_ID`；项目据此标记测试租户/数据，cleanup 必须只删除该 run ID 的数据。无命令、setup/cleanup 失败、非零退出、超时、启动失败、执行期间输入变化均失败；`check --stage L4` 再核对全量日志是否存在且未改动。测试数量和跳过项因框架不同由项目测试报告及 validation 明确登记，不能从退出码推断。
 
 日志在写盘前遮蔽常见 Bearer/JWT、Cookie、数据库 URL 和 password/token/secret/API key；报告只保存脱敏配置副本及原配置哈希。该规则降低意外泄露，不替代项目的 secret scanner。`doctor` 会阻止 Git 已跟踪的 `.env`，并报告 `.env.example` 中疑似明文凭证的字段名而不打印值。
 

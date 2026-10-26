@@ -26,7 +26,7 @@ iOS Simulator 依赖 macOS、Xcode 和模拟器运行时。Windows Agent 不能�
 python .sop/runtime/sop.py attest-platform --environment local-dev --tool wechatide --tool-version 2.x --source-root miniprogram --compile-evidence .sop/evidence/compile.txt --smoke-evidence .sop/evidence/smoke.txt
 ```
 
-该命令只接受项目内已有且非空的证据，将其哈希、工具版本、源码指纹、流程清单哈希和当前 Git commit/tree 写入 `.sop/platform-verification.json`。证据变化、流程清单变化、源码变化或绑定提交不在当前 Git 历史中时，L4 失败。后续仅提交治理文件不会使源码证据过期，但源码或 required 流程范围变化会。直接手改 `compile/smoke=passed` 只兼容旧版 L3 迁移检查，不能通过 v2 的 L4。
+该命令只接受项目内已有且非空的证据，将其哈希、工具版本、`platform.source_paths` 中应用源码与构建配置的指纹、流程定义哈希和当前 Git commit/tree 写入 `.sop/platform-verification.json` v3。证据内容、流程定义、所列源码变化或绑定提交不在当前 Git 历史中时，L4 失败；追加真实流程执行状态和证据路径不会使凭据过期，流程是否通过仍由独立门禁检查。漏列实际应用依赖会造成错误保鲜，维护者必须按平台扫描/构建入口审查路径表。直接手改 `compile/smoke=passed` 不能通过 L4。
 
 `platform-flows.json` 是流程门禁，不是执行脚本。Agent 必须先识别平台项目，再加载对应平台技能；微信小程序至少使用编译器和页面自动化能力，遇到运行时错误加载调试能力，要求真机预览时再加载预览能力。每条流程执行后立即写入状态和证据路径；无法执行时写 `blocked` 或 `unverified` 及责任人/下一步，不能只在最终文字里说明“已覆盖”。
 
